@@ -1,0 +1,8 @@
+<Bindings>
+    <Binding name="PRESSTOGROUP_STEP" header="PRESSTOGROUP">
+        PressToGroup:OnPress()
+    </Binding>
+    <Binding name="PRESSTOGROUP_WINDOW">
+        PressToGroup:ToggleWindow()
+    </Binding>
+</Bindings>
