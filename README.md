@@ -1,48 +1,52 @@
-# PressToGroup 0.1.2
+# PressToGroup 0.1.4
 
-Помощник поиска заранее собранных групп Mythic+ для WoW Retail 12.1.5. Самостоятельный аддон на штатном WoW API, без сторонних библиотек.
+[Русская версия](README.ru.md)
 
-Это первая экспериментальная версия. Логика проверяется автоматическими тестами; работа игровых нажатий и разрешения LFG, особенно в бою, требуют проверки в клиенте. Порядок проверки — в [docs/TESTING.md](docs/TESTING.md).
+A Mythic+ premade group finder assistant for WoW Retail 12.1.5. A standalone addon built on the native WoW API, with no third-party libraries.
 
-## Установка
+This is an early experimental release. Automated tests cover the logic; game input handling and LFG permissions, especially in combat, still require in-game validation.
 
-Из ZIP скопируйте папку `PressToGroup` в `_retail_/Interface/AddOns/`. Итоговый путь должен быть `_retail_/Interface/AddOns/PressToGroup/PressToGroup.toc`. Перезапустите игру или выполните `/reload`, если папка уже была установлена, и включите аддон в списке модификаций.
+## Installation
 
-Если скачиваете исходники через **Code → Download ZIP** на GitHub, переименуйте папку `PressToGroup-main` в `PressToGroup` перед копированием.
+Copy the `PressToGroup` folder from the ZIP into `_retail_/Interface/AddOns/`. The final path should be `_retail_/Interface/AddOns/PressToGroup/PressToGroup.toc`. Restart the game, or use `/reload` if the addon folder was already installed, and enable the addon in the AddOns list.
 
-## Начало работы
+If you download the source using **Code → Download ZIP** on GitHub, rename `PressToGroup-main` to `PressToGroup` before copying it.
 
-1. Введите `/ptg`, откройте настройки и выберите роль, подземелья, минимальный рейтинг лидера, языки поиска и нужные фильтры состава. Все подземелья изначально отмечены. Снятая галочка исключает подземелье; без отметок поиск приостановлен. Кнопка «Все» отмечает весь список.
-2. Откройте штатный поиск через кнопку аддона. Один раз задайте уровень или диапазон ключей в строке поиска Blizzard и выполните поиск. Аддон использует это условие и показывает его в своём окне; защищённый текст он не записывает.
-3. Закройте штатное окно и нажмите «Включить». Следующие нажатия стандартных игровых action buttons запускают по одному доступному шагу: поиск, подачу или отмену заявки.
-4. Для отдельного ручного шага используйте кнопку «Шаг» или назначьте сочетание клавиш в разделе PressToGroup штатных настроек клавиш. Приглашения принимайте в игровом диалоге.
+The `Media` folder containing the icon is included. The icon appears in the WoW AddOns list and the `/ptg` window title.
 
-Язык интерфейса выбирается автоматически по клиенту либо вручную: русский или английский. Он не меняет языки поиска; обязательные языки Blizzard сохраняются.
+Left-click the minimap icon to show or hide the addon window, just like `/ptg`. EllesmereUI picks it up in its minimap button menu; without EllesmereUI, it stays beside the minimap. Clicking this button does not start the assistant or perform an LFG step.
 
-## Поведение
+## Getting started
 
-- Подходящие группы выбираются от самых свежих к старым; проверяются роль, свободные места, требования к персонажу и рейтинг лидера.
-- Фильтры наличия танка, «Кровожадности» / «Героизма» и воскрешения в бою учитывают самого игрока. Возможности определяются по известным классам и специализациям; это не проверка готовности способности, таланта или питомца. Недостающие сведения не считаются подтверждением фильтра.
-- Учитывается общий клиентский предел заявок, до пяти одновременно, включая поданные вручную. Собственная подтверждённая заявка без ответа через 180 секунд может заменяться при наличии подходящей группы: одно нажатие отменяет её, следующее отдельное нажатие подаёт новую после подтверждения отмены.
-- Вручную поданные заявки и заявки неизвестного происхождения после `/reload` автоматически не отменяются. «Стоп» оставляет отправленные заявки. После входа в игру, `/reload` и выхода из группы помощник нужно включить явно.
-- Повторный поиск допускается через 8 секунд; явные ошибки увеличивают задержку до 8, 16, 32 и 60 секунд. По истечении задержки требуется новое нажатие. Таймеры только обновляют состояние.
-- Открытый штатный поиск, приглашение и ограничения `ChatMessagingLockdown` приостанавливают действия; вступление в группу выключает помощника. После закрытия штатного поиска требуется свежая выдача.
-- У ответов поиска нет идентификатора запроса. Неоднозначный внешний поиск или отсутствие ответа в течение 12 секунд блокирует дальнейшие действия до `/reload`; затем помощник нужно включить заново. Обычный ручной поиск в штатном окне, когда помощник не ждёт ответа, обрабатывается как пауза при получении ответа.
+1. Type `/ptg`, open Settings, and choose your role, dungeons, minimum leader rating, search languages, and group composition filters. All dungeons are selected initially. Unchecking a dungeon excludes it; clearing every checkbox pauses the search. The **All** button selects the entire list.
+2. Open the native Group Finder using the addon button. Set the key level or range in Blizzard's search box and run a search once. The addon reuses this condition and displays it in its window; it does not write to the protected search box.
+3. Close the native window and click **Start**. Subsequent presses of standard Blizzard action buttons perform one available step at a time: search, apply, or cancel an application.
+4. To perform a manual step, click **Next step** or assign a key in the PressToGroup section of the game's key binding settings. Accept invitations through the game's invitation dialog.
 
-## Команды и диагностика
+The interface language follows your client automatically or can be set to Russian or English. It does not change the search languages; Blizzard's required languages are preserved.
 
-| Команда | Действие |
+## Behavior
+
+- Eligible groups are considered from newest to oldest. Checks include your role, available slots, character requirements, and the leader's rating.
+- The tank, Bloodlust / Heroism, and battle resurrection filters include your own character. Capabilities are inferred from known classes and specializations, without checking cooldowns, talents, or pets. Missing information does not satisfy a filter.
+- The assistant respects the client's application limit, up to five at once, including manual applications. A confirmed application submitted by the assistant can be replaced after 180 seconds without a response if another eligible group is available: one press cancels it, and a separate later press submits the replacement after cancellation is confirmed.
+- Manual applications and applications of unknown origin after `/reload` are never cancelled automatically. **Stop** leaves submitted applications in place. After login, `/reload`, or leaving a group, you must start the assistant explicitly.
+- Searches can repeat after 8 seconds. Reported search errors increase the delay through 8, 16, 32, and 60 seconds. A new press is required after the delay; timers only update state.
+- An open native Group Finder, an invitation, or `ChatMessagingLockdown` restrictions pause actions. Joining a group stops the assistant. After closing the native Group Finder, fresh results are required.
+- Search responses have no request identifier. An ambiguous external search or no response within 12 seconds blocks further actions until `/reload`; you must then start the assistant again. A normal manual search in the native window, when the assistant is not waiting for a response, is handled as a pause when its results arrive.
+
+## Commands and diagnostics
+
+| Command | Action |
 | --- | --- |
-| `/ptg` | Показать или скрыть окно |
-| `/ptg start` | Включить помощника |
-| `/ptg stop` | Выключить, сохранив отправленные заявки |
-| `/ptg status` | Вывести состояние и диагностический журнал |
-| `/ptg log` | Вывести состояние и диагностический журнал |
+| `/ptg` | Show or hide the window |
+| `/ptg start` | Start the assistant |
+| `/ptg stop` | Stop the assistant, keeping submitted applications |
+| `/ptg status` | Print the current state and diagnostic log |
+| `/ptg log` | Print the current state and diagnostic log |
 
-Настройки, положение окна и короткий журнал сохраняются для персонажа. Журнал не записывает имена игроков и названия объявлений. Активные заявки читаются из клиента; принадлежность помощнику отслеживается только в текущем сеансе.
+Settings, window position, and a short log are saved per character. The log does not record player names or listing titles. Active applications are read from the client; ownership by the assistant is tracked only within the current session.
 
-## Ограничения
+## Limitations
 
-Ввод первой версии рассчитан на стандартные панели Blizzard; поддержка пользовательских панелей не заявлена. Автоматические тесты не подтверждают аппаратный контекст, отсутствие блокировок или работу LFG в бою. Аддон не обходит ограничения клиента и не принимает приглашения.
-
-Исходные требования — в [docs/spec.md](docs/spec.md), термины — в [CONTEXT.md](CONTEXT.md).
+This version handles input from standard Blizzard action bars; custom action bars are not supported. Automated tests cannot confirm hardware input context, the absence of blocked actions, or LFG behavior in combat. The addon does not bypass client restrictions or accept invitations.
