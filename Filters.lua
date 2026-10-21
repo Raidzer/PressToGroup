@@ -54,12 +54,7 @@ function F.Eligible(group, settings, player)
     if total ~= group.numMembers then return false, "unknown_group" end
     if counts[role] >= CAPACITY[role] then return false, "role_full" end
 
-    local dungeons = settings.dungeons or {}
-    local hasSelection = false
-    for _, selected in pairs(dungeons) do
-        if selected == true then hasSelection = true; break end
-    end
-    if hasSelection and dungeons[group.activityID] ~= true then return false, "dungeon" end
+    if settings.dungeons and settings.dungeons[group.activityID] ~= true then return false, "dungeon" end
     local minRating = settings.minRating or 0
     if not number(minRating) then return false, "unknown_rating" end
     if group.leaderRating < minRating then return false, "rating" end

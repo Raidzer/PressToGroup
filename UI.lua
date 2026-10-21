@@ -139,6 +139,10 @@ local function buildSettings()
     settings.dungeonLabel = label(content, "GameFontNormal", 260)
     settings.allDungeons = button(content, 65, function()
         wipe(PTG.db.dungeons)
+        for _, dungeon in ipairs(PTG:GetDungeons()) do
+            PTG.db.dungeons[dungeon.id] = true
+        end
+        PTG.db.dungeonsInitialized = true
         changed()
     end)
     settings.dungeonHint = label(content, "GameFontDisableSmall", 335)
@@ -194,7 +198,6 @@ local function buildSettings()
         self.allDungeons:ClearAllPoints()
         self.allDungeons:SetPoint("TOPLEFT", content, "TOPLEFT", 273, y + 5)
         self.allDungeons:SetText(PTG:L("all_dungeons"))
-        self.allDungeons:SetEnabled(next(db.dungeons) ~= nil)
         place(self.dungeonLabel, 26)
         self.dungeonHint:SetText(PTG:L("dungeons_hint"))
         place(self.dungeonHint, self.dungeonHint:GetStringHeight() + 8)
@@ -205,20 +208,24 @@ local function buildSettings()
             self.dungeonEmpty:SetText(PTG:L("no_dungeons"))
             place(self.dungeonEmpty, 28)
         end
+        local hasUncheckedDungeon = false
         for _, dungeon in ipairs(dungeons) do
             local control = self.dungeonChecks[dungeon.id]
             if not control then
                 control = check(content, function(widget)
                     db.dungeons[dungeon.id] = widget:GetChecked() and true or nil
+                    db.dungeonsInitialized = true
                     changed()
                 end)
                 self.dungeonChecks[dungeon.id] = control
             end
             control.text:SetText(dungeon.name)
             control:SetChecked(db.dungeons[dungeon.id] == true)
+            if db.dungeons[dungeon.id] ~= true then hasUncheckedDungeon = true end
             control:Show()
             place(control, math.max(27, control.text:GetStringHeight() + 6))
         end
+        self.allDungeons:SetEnabled(hasUncheckedDungeon)
         y = y - 14
         self.languageLabel:SetText(PTG:L("languages"))
         place(self.languageLabel, 22)

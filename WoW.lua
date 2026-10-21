@@ -33,6 +33,11 @@ function API:Context()
     if not C or not C.Search or not C.GetSearchResultPlayerInfo then return "unsupported" end
     if LFGListFrame and LFGListFrame:IsVisible() then return "manual_search" end
     if not PTG.activities or not next(PTG.activities) then return "unavailable" end
+    local selected = false
+    for id in pairs(PTG.activities) do
+        if PTG.db.dungeons[id] == true then selected = true; break end
+    end
+    if not selected then return "no_dungeons_selected" end
     local text = query()
     if not text or text == "" then return "no_query" end
     if PTG.queryText ~= text then
@@ -64,14 +69,22 @@ function PTG:LoadDungeons()
     self.dungeons, self.activities = {}, {}
     if not C or not Enum.LFGListFilter then return end
     local flags = bit.bor(Enum.LFGListFilter.CurrentSeason, Enum.LFGListFilter.PvE)
+    local complete = true
     for _, id in ipairs(native(C.GetAvailableActivities, CATEGORY, nil, flags) or {}) do
         local info = native(C.GetActivityInfoTable, id)
+        if not info then complete = false end
         if info and info.isMythicPlusActivity == true then
             self.activities[id] = true
             self.dungeons[#self.dungeons + 1] = {id = id, name = info.fullName}
         end
     end
     table.sort(self.dungeons, function(a, b) return a.name < b.name end)
+    if not self.db.dungeonsInitialized and complete and #self.dungeons > 0 then
+        if not next(self.db.dungeons) then
+            for _, dungeon in ipairs(self.dungeons) do self.db.dungeons[dungeon.id] = true end
+        end
+        self.db.dungeonsInitialized = true
+    end
 end
 
 function PTG:GetLanguages()
@@ -94,10 +107,9 @@ local function readGroup(id)
         if not public(info[field], kind) then return nil end
     end
     local activityID
-    local selected = next(PTG.db.dungeons) ~= nil
     for _, activity in ipairs(info.activityIDs) do
         if public(activity, "number") and PTG.activities[activity]
-            and (not selected or PTG.db.dungeons[activity]) then activityID = activity; break end
+            and PTG.db.dungeons[activity] == true then activityID = activity; break end
     end
     if not activityID then return nil end
     local rating = info.leaderOverallDungeonScore
@@ -185,7 +197,7 @@ function API:Search(settings)
         languages[language.id] = language.mandatory or language.selected
     end
     for id in pairs(PTG.activities) do
-        if not next(settings.dungeons) or settings.dungeons[id] then activities[#activities + 1] = id end
+        if settings.dungeons[id] == true then activities[#activities + 1] = id end
     end
     if #activities == 0 or not next(languages) then return false, "unavailable" end
     table.sort(activities)
@@ -300,7 +312,7 @@ end
 
 function PTG:PrintLog()
     local view = self:GetView()
-    print("PressToGroup 0.1.1: " .. self:L(view.state, unpack(view.stateArgs or {})))
+    print("PressToGroup 0.1.2: " .. self:L(view.state, unpack(view.stateArgs or {})))
     for _, entry in ipairs(self.engine.log) do
         print(string.format("[%0.1f] %s", entry.at, self:L(entry.key, unpack(entry.args))))
     end

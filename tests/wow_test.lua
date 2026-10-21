@@ -127,6 +127,43 @@ assert(loadfile(root .. "/WoW.lua"))("PressToGroup", PTG)
 emit("ADDON_LOADED", "PressToGroup")
 check(PTG.engine ~= nil and not PTG.engine.running, "loads without deprecated specialization globals; starts OFF")
 check(PTG.db.role == "HEALER", "current specialization role")
+check(PTG.db.dungeons[101] and PTG.db.dungeons[102] and PTG.db.dungeonsInitialized,
+    "all season dungeons are explicitly checked by default")
+PTG.db.dungeons, PTG.db.dungeonsInitialized = {[101] = true}, nil
+PTG:LoadDungeons()
+check(PTG.db.dungeons[101] and not PTG.db.dungeons[102] and PTG.db.dungeonsInitialized,
+    "migration preserves a previous explicit subset")
+local availableActivities = C_LFGList.GetAvailableActivities
+PTG.db.dungeons, PTG.db.dungeonsInitialized = {}, nil
+C_LFGList.GetAvailableActivities = function() return {} end
+PTG:LoadDungeons()
+check(not PTG.db.dungeonsInitialized, "missing initial season data defers default selection")
+C_LFGList.GetAvailableActivities = availableActivities
+PTG:LoadDungeons()
+check(PTG.db.dungeons[101] and PTG.db.dungeons[102] and PTG.db.dungeonsInitialized,
+    "legacy empty selection is migrated to checked defaults when data arrives")
+local activityInfo = C_LFGList.GetActivityInfoTable
+PTG.db.dungeons, PTG.db.dungeonsInitialized = {}, nil
+C_LFGList.GetActivityInfoTable = function(id) if id ~= 102 then return activityInfo(id) end end
+PTG:LoadDungeons()
+check(not PTG.db.dungeonsInitialized and next(PTG.db.dungeons) == nil,
+    "partially loaded activity details cannot finalize the default selection")
+C_LFGList.GetActivityInfoTable = activityInfo
+PTG:LoadDungeons()
+check(PTG.db.dungeons[101] and PTG.db.dungeons[102] and PTG.db.dungeonsInitialized,
+    "late-loaded activity details also get their default checkmark")
+PTG.db.dungeons = {}
+PTG:LoadDungeons()
+check(next(PTG.db.dungeons) == nil, "intentional empty selection survives settings reload")
+local noSelectionCalls = #calls
+PTG:Start()
+PTG:OnPress()
+check(PTG:GetView().state == "no_dungeons_selected" and #calls == noSelectionCalls,
+    "zero checked dungeons pauses without sending a wildcard search")
+check(not PTG.engine.api:Search(PTG.db) and #calls == noSelectionCalls,
+    "the search adapter independently refuses an empty selection")
+PTG.db.dungeons[101] = true
+PTG:SettingsChanged()
 check(#PTG:GetDungeons() == 2 and not PTG.activities[103], "only season M+ dungeons")
 PTG.dungeons, PTG.activities = {}, {}
 emit("LFG_LIST_AVAILABILITY_UPDATE")
@@ -150,7 +187,7 @@ local request = calls[#calls].args
 check(request[1] == 2 and request[2] == 0 and request[3] == 0, "native category and filter positions")
 check(request[4].ruRU and request[4].enUS and not request[4].deDE, "language table in the fourth argument")
 check(request[6].difficultyMythicPlus and request[6].needsHealer, "own native advanced filter")
-check(#request[7] == 2 and request[7][1] == 101, "activity IDs are seventh argument")
+check(#request[7] == 1 and request[7][1] == 101, "only checked dungeon IDs are sent in the seventh argument")
 check(not PTG.engine.conflict, "own search hook is not a foreign query")
 local count = #calls
 SecureActionButton_OnClick(action, "LeftButton", false, true, true)
@@ -179,6 +216,9 @@ check(text == "+19" and calls[#calls].kind == "open", "opening the same search p
 LFGListFrame.parentVisible = false
 
 local api = PTG.engine.api
+results[1].activityIDs = {102}
+check(api:ReadGroup(1) == nil, "an unchecked dungeon is also excluded from returned groups")
+results[1].activityIDs = {101}
 results[1].remaining = 0
 check(api:ReadGroup(1).eligible == false, "reserved healer slot is unavailable")
 results[1].remaining = nil
@@ -209,6 +249,19 @@ PTG:Start()
 now = now + 9
 PTG:OnPress()
 check(calls[#calls].kind == "search", "new search after explicit start")
+PTG.db.dungeons = {}
+PTG:SettingsChanged()
+PTG.engine:Plan()
+check(PTG.engine.search.stale and PTG:GetView().state == "no_dungeons_selected",
+    "unchecking the final dungeon invalidates an in-flight search")
+emit("LFG_LIST_SEARCH_RESULTS_RECEIVED")
+local clearedCalls = #calls
+PTG:OnPress()
+check(not PTG.engine.validAt and #calls == clearedCalls, "a response from before clearing cannot authorize an application")
+PTG.db.dungeons[101] = true
+PTG:SettingsChanged()
+now = now + 9
+PTG:OnPress()
 text = "+20"
 PTG.engine:Plan()
 check(PTG.engine.search.stale, "changed native query invalidates pending search")

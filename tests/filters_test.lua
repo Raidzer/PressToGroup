@@ -32,7 +32,9 @@ eligible(group(), { role = "HEALER", minRating = 3000, dungeons = { [100] = true
     requireTank = true, requireLust = true, requireBrez = true }, true)
 eligible(group(), { minRating = 3001 }, false, "rating")
 eligible(group(), { dungeons = { [101] = true } }, false, "dungeon")
-eligible(group(), { dungeons = { [101] = false } }, true)
+eligible(group(), { dungeons = { [101] = false } }, false, "dungeon")
+eligible(group(), { dungeons = {} }, false, "dungeon")
+eligible(group(), { dungeons = { [100] = false, [101] = true } }, false, "dungeon")
 eligible(group(), { role = "NONE" }, false, "unknown_role")
 eligible(group(), { role = "TANK" }, false, "role_full")
 

@@ -68,7 +68,7 @@ for key in pairs(dictionaries.ruRU) do
     check(dictionaries.enUS[key] ~= nil, "missing English key: " .. key)
 end
 for _, key in ipairs({ "filters_changed", "off", "grouped", "chat_lockdown", "unsupported", "manual_search",
-    "unavailable", "no_query", "search_conflict", "search_timeout", "search_failed", "search_empty", "no_candidates",
+    "unavailable", "no_query", "no_dungeons_selected", "search_conflict", "search_timeout", "search_failed", "search_empty", "no_candidates",
     "wait_apply", "wait_cancel", "apply_sent", "cancel_sent" }) do
     check(dictionaries.enUS[key] ~= nil, "unlocalized dynamic state: " .. key)
 end
@@ -112,6 +112,8 @@ PTG.ui.rows[2].cancel.scripts.OnClick()
 check(PTG.cancelled == nil and not PTG.ui.rows[2].cancel.enabled, "unknown ownership cannot be cancelled")
 PTG.settingsUI:Show()
 check(not PTG.settingsUI.languageChecks.ruRU.enabled, "mandatory language cannot be changed")
+check(PTG.settingsUI.dungeonChecks[101]:GetChecked() and not PTG.settingsUI.dungeonChecks[102]:GetChecked(), "dungeon checkboxes show only explicit selections")
+check(PTG.settingsUI.allDungeons.enabled, "all dungeons is available when a visible dungeon is unchecked")
 PTG.settingsUI.localeButtons[3].scripts.OnClick()
 check(PTG.db.locale == "enUS" and PTG.db.languages.enUS and PTG.db.dungeons[101], "UI language preserves search selections")
 PTG.settingsUI.roleButtons[1].scripts.OnClick()
@@ -120,8 +122,27 @@ local dungeon = PTG.settingsUI.dungeonChecks[102]
 dungeon:SetChecked(true)
 dungeon.scripts.OnClick(dungeon)
 check(PTG.db.dungeons[102] and PTG.db.dungeons[101], "dungeon selection adds only its own ID")
+check(not PTG.settingsUI.allDungeons.enabled, "all dungeons is disabled when every visible dungeon is selected")
+local firstDungeon = PTG.settingsUI.dungeonChecks[101]
+firstDungeon:SetChecked(false)
+firstDungeon.scripts.OnClick(firstDungeon)
+check(PTG.db.dungeons[101] == nil and PTG.db.dungeons[102], "unchecking a dungeon preserves the other selection")
+check(PTG.settingsUI.allDungeons.enabled, "all dungeons becomes available after unchecking a dungeon")
+PTG.db.dungeonsInitialized = nil
+dungeon:SetChecked(false)
+dungeon.scripts.OnClick(dungeon)
+PTG:RefreshUI()
+check(next(PTG.db.dungeons) == nil and not firstDungeon:GetChecked() and not dungeon:GetChecked(), "zero checked dungeons remains an empty selection after refresh")
+check(PTG.db.dungeonsInitialized, "explicit unchecking prevents late data from restoring the default selection")
+check(PTG.settingsUI.allDungeons.enabled, "all dungeons can recover from an empty selection")
+view.state, view.stateArgs = "no_dungeons_selected", {}
+PTG:RefreshUI()
+check(PTG.ui.status.text == PTG:L("no_dungeons_selected"), "empty dungeon selection has a localized paused status")
+PTG.db.dungeons[999] = true
 PTG.settingsUI.allDungeons.scripts.OnClick()
-check(next(PTG.db.dungeons) == nil, "all dungeons uses the empty filter")
+check(PTG.db.dungeons[101] and PTG.db.dungeons[102] and PTG.db.dungeons[999] == nil, "all dungeons explicitly selects the current season IDs")
+check(firstDungeon:GetChecked() and dungeon:GetChecked() and not PTG.settingsUI.allDungeons.enabled, "all dungeons restores every checkbox")
+check(PTG.db.dungeonsInitialized, "all dungeons preserves the initialized selection semantics")
 PTG.settingsUI.rating:SetText("-12")
 PTG.settingsUI.rating.scripts.OnEditFocusLost(PTG.settingsUI.rating)
 check(PTG.db.minRating == 0, "rating is nonnegative")
