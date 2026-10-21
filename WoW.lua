@@ -312,7 +312,7 @@ end
 
 function PTG:PrintLog()
     local view = self:GetView()
-    print("PressToGroup 0.1.2: " .. self:L(view.state, unpack(view.stateArgs or {})))
+    print("PressToGroup 0.1.4: " .. self:L(view.state, unpack(view.stateArgs or {})))
     for _, entry in ipairs(self.engine.log) do
         print(string.format("[%0.1f] %s", entry.at, self:L(entry.key, unpack(entry.args))))
     end

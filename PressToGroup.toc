@@ -1,9 +1,10 @@
 ## Interface: 120105
 ## Title: PressToGroup
+## IconTexture: Interface\AddOns\PressToGroup\Media\Icon
 ## Notes: Mythic+ group search and applications on your game inputs.
 ## Notes-ruRU: Поиск групп Mythic+ и подача заявок от ваших игровых нажатий.
 ## Author: Raidzer
-## Version: 0.1.2
+## Version: 0.1.4
 ## OptionalDeps: Blizzard_GroupFinder
 ## SavedVariablesPerCharacter: PressToGroupDB
 

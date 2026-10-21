@@ -23,6 +23,11 @@ function Widget:SetNumber(number) self:SetText(tostring(number)) end
 function Widget:SetHeight(height) self.height = height end
 function Widget:SetSize(width, height) self.width, self.height = width, height end
 function Widget:SetPoint(...) self.point = { ... } end
+function Widget:SetNormalTexture(texture) self.normalTexture = { texture = texture } end
+function Widget:GetNormalTexture() return self.normalTexture end
+function Widget:RegisterForClicks(...) self.clicks = { ... } end
+function Widget:SetOwner(owner, anchor) self.owner, self.anchor = owner, anchor end
+function Widget:AddLine(text) self.line = text end
 function Widget:SetChecked(checked) self.checked = checked end
 function Widget:GetChecked() return self.checked end
 function Widget:SetEnabled(enabled) self.enabled = enabled end
@@ -41,11 +46,17 @@ function Widget:CreateFontString() return Widget:new() end
 for _, method in ipairs({ "SetJustifyH", "SetJustifyV", "SetWidth", "SetFrameStrata",
     "SetBackdrop", "SetClampedToScreen", "SetMovable", "EnableMouse", "ClearAllPoints",
     "RegisterForDrag", "StartMoving", "StopMovingOrSizing", "SetAutoFocus", "SetNumeric", "SetMaxLetters",
-    "SetScrollChild", "SetFontObject", "SetWordWrap", "ClearFocus" }) do
+    "SetScrollChild", "SetFontObject", "SetWordWrap", "ClearFocus", "SetHighlightTexture" }) do
     Widget[method] = function() end
 end
-CreateFrame = function() return Widget:new() end
+CreateFrame = function(kind, name, parent)
+    local widget = Widget:new()
+    widget.kind, widget.name, widget.parent = kind, name, parent
+    return widget
+end
 UIParent = Widget:new()
+Minimap = Widget:new()
+GameTooltip = Widget:new()
 
 assert(loadfile(root .. "/Locale.lua"))("PressToGroup", PTG)
 local dictionaries
@@ -95,9 +106,25 @@ function PTG:Start() self.started = true end
 function PTG:Stop() self.stopped = true end
 function PTG:OpenSearch() self.searchOpened = true end
 function PTG:PrintLog() self.logOpened = true end
+function PTG:ToggleWindow() self.windowToggles = (self.windowToggles or 0) + 1 end
 
 assert(loadfile(root .. "/UI.lua"))("PressToGroup", PTG)
 PTG:BuildUI()
+local minimap = PTG.minimapButton
+check(minimap.kind == "Button" and minimap.name == "PressToGroupMinimapButton" and minimap.parent == Minimap
+    and minimap.width >= 20, "named minimap button is discoverable by EllesmereUI without its API")
+check(minimap.icon.texture == "Interface\\AddOns\\PressToGroup\\Media\\Icon", "minimap uses the approved icon")
+check(minimap.clicks[1] == "LeftButtonUp" and #minimap.clicks == 1, "minimap registers only left-click release")
+minimap.scripts.OnClick()
+check(PTG.windowToggles == 1 and not PTG.steps and not PTG.started and not PTG.stopped,
+    "minimap click only invokes the existing window toggle")
+minimap.scripts.OnEnter(minimap)
+check(GameTooltip.owner == minimap and GameTooltip:IsShown() and GameTooltip.line == PTG:L("binding_window"),
+    "minimap tooltip explains the window action in the current language")
+minimap.scripts.OnLeave()
+check(not GameTooltip:IsShown(), "leaving the minimap button hides its tooltip")
+PTG:BuildUI()
+check(PTG.minimapButton == minimap, "building UI twice does not duplicate the minimap button")
 check(PTG.ui.status.text == PTG:L("waiting_search", 6), "state arguments are formatted")
 check(PTG.ui.counts.text:find("\n", 1, true), "counts use two explicit lines")
 check(PTG.ui.counts.point[3] - PTG.ui.counts.height > PTG.ui.response.point[3], "counts do not overlap response time")
@@ -116,6 +143,9 @@ check(PTG.settingsUI.dungeonChecks[101]:GetChecked() and not PTG.settingsUI.dung
 check(PTG.settingsUI.allDungeons.enabled, "all dungeons is available when a visible dungeon is unchecked")
 PTG.settingsUI.localeButtons[3].scripts.OnClick()
 check(PTG.db.locale == "enUS" and PTG.db.languages.enUS and PTG.db.dungeons[101], "UI language preserves search selections")
+minimap.scripts.OnEnter(minimap)
+check(GameTooltip.line == "Show / hide the assistant window", "minimap tooltip follows a language change")
+minimap.scripts.OnLeave()
 PTG.settingsUI.roleButtons[1].scripts.OnClick()
 check(PTG.db.role == "TANK" and PTG.db.languages.enUS and PTG.db.dungeons[101], "role preserves other settings")
 local dungeon = PTG.settingsUI.dungeonChecks[102]
