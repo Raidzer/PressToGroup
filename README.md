@@ -1,6 +1,6 @@
 # PressToGroup 0.1.4
 
-[Русская версия](README.ru.md)
+[Русская версия](README.ru.md).
 
 A Mythic+ premade group finder assistant for WoW Retail 12.1.5. A standalone addon built on the native WoW API, with no third-party libraries.
 
