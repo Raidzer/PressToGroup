@@ -29,12 +29,13 @@ SOUNDKIT = {READY_CHECK = 8960}
 PlaySound = function() calls[#calls + 1] = {kind = "sound"} end
 SlashCmdList = {}
 local text = "+19"
-LFGListFrame = {shown = false, CategorySelection = {}, SearchPanel = {
+LFGListFrame = {shown = false, parentVisible = true, CategorySelection = {}, SearchPanel = {
     categoryID = 2, SearchBox = {GetText = function() return text end},
 }}
 function LFGListFrame:IsShown() return self.shown end
+function LFGListFrame:IsVisible() return self.shown and self.parentVisible end
 LFGListUtil_GetActiveQueueMessage = function() return queueMessage end
-PVEFrame_ShowFrame = function() LFGListFrame.shown = true end
+PVEFrame_ShowFrame = function() LFGListFrame.shown, LFGListFrame.parentVisible = true, true end
 LFGListFrame_SetActivePanel = function() calls[#calls + 1] = {kind = "open"} end
 LFGListCategorySelection_SelectCategory = function() error("should preserve the current category") end
 LFGListCategorySelection_StartFindGroup = function() error("must not clear the query") end
@@ -134,7 +135,14 @@ check(PTG.db.log == PTG.engine.log, "short diagnostics are saved")
 PTG.db.languages.enUS = true
 local languages = PTG:GetLanguages()
 check(languages[1].mandatory and languages[2].selected, "default plus chosen language")
+LFGListFrame.shown = true
 PTG:Start()
+local pausedCalls = #calls
+PTG:OnPress()
+check(PTG:GetView().state == "manual_search" and #calls == pausedCalls, "visible native finder pauses actions")
+LFGListFrame.parentVisible = false
+PTG.engine:Plan()
+check(PTG:GetView().state == "ready_search", "closing the native parent window releases the search pause")
 local action = {action = 1, GetName = function() return "ActionButton1" end, GetAttribute = function() end}
 SecureActionButton_OnClick(action, "LeftButton", true, true, true)
 check(casts == 1 and calls[#calls].kind == "search", "game action and one LFG step")
@@ -168,7 +176,7 @@ apps[1] = {status = "none"}
 emit("LFG_LIST_APPLICATION_STATUS_UPDATED", 1)
 PTG:OpenSearch()
 check(text == "+19" and calls[#calls].kind == "open", "opening the same search preserves key text")
-LFGListFrame.shown = false
+LFGListFrame.parentVisible = false
 
 local api = PTG.engine.api
 results[1].remaining = 0
@@ -206,10 +214,10 @@ PTG.engine:Plan()
 check(PTG.engine.search.stale, "changed native query invalidates pending search")
 emit("LFG_LIST_SEARCH_RESULTS_RECEIVED")
 check(not PTG.engine.validAt, "stale response cannot authorize applications")
-LFGListFrame.shown = true
+LFGListFrame.parentVisible = true
 C_LFGList.Search(2, 0, 0, {ruRU = true})
 emit("LFG_LIST_SEARCH_RESULTS_RECEIVED")
-LFGListFrame.shown = false
+LFGListFrame.parentVisible = false
 check(not PTG.engine.conflict and not PTG.engine.validAt, "isolated manual search is drained, not adopted")
 C_LFGList.Search(2, 0, 0, {ruRU = true})
 check(PTG.engine.conflict, "foreign hidden search latches conflict")

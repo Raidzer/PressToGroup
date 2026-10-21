@@ -31,7 +31,7 @@ function API:Context()
     if IsInGroup() then return "grouped" end
     if locked() then return "chat_lockdown" end
     if not C or not C.Search or not C.GetSearchResultPlayerInfo then return "unsupported" end
-    if LFGListFrame and LFGListFrame:IsShown() then return "manual_search" end
+    if LFGListFrame and LFGListFrame:IsVisible() then return "manual_search" end
     if not PTG.activities or not next(PTG.activities) then return "unavailable" end
     local text = query()
     if not text or text == "" then return "no_query" end
@@ -300,7 +300,7 @@ end
 
 function PTG:PrintLog()
     local view = self:GetView()
-    print("PressToGroup 0.1.0: " .. self:L(view.state, unpack(view.stateArgs or {})))
+    print("PressToGroup 0.1.1: " .. self:L(view.state, unpack(view.stateArgs or {})))
     for _, entry in ipairs(self.engine.log) do
         print(string.format("[%0.1f] %s", entry.at, self:L(entry.key, unpack(entry.args))))
     end
@@ -334,7 +334,7 @@ local function initialize()
     end
     hooksecurefunc(C, "Search", function()
         if not PTG.issuingSearch then
-            PTG.engine:ForeignSearch(LFGListFrame and LFGListFrame:IsShown())
+            PTG.engine:ForeignSearch(LFGListFrame and LFGListFrame:IsVisible())
         end
     end)
     SLASH_PRESSTOGROUP1 = "/ptg"
