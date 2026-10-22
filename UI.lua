@@ -26,8 +26,8 @@ local function button(parent, width, callback)
     return control
 end
 
-local function panel(name, width, height)
-    local frame = CreateFrame("Frame", name, UIParent, "BackdropTemplate")
+local function panel(name, width, height, parent)
+    local frame = CreateFrame("Frame", name, parent or UIParent, "BackdropTemplate")
     frame:SetSize(width, height)
     frame:SetFrameStrata("DIALOG")
     frame:SetBackdrop({
@@ -136,6 +136,47 @@ local function actionButton(parent, width, callback, primary)
     return control
 end
 
+function PTG:ShowWelcome()
+    if not self.ui then return false end
+    local frame = self.welcomeUI
+    if not frame then
+        frame = panel("PressToGroupWelcome", 420, 240)
+        self.welcomeUI = frame
+        frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+        frame:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+        frame:SetBackdropColor(0.069, 0.058, 0.047, 0.98)
+        frame:SetBackdropBorderColor(1, 1, 1, 0.16)
+        frame.title:SetTextColor(1, 1, 1)
+        frame.title:SetWidth(340)
+        frame.body = label(frame, "GameFontHighlight", 388)
+        frame.body:SetPoint("TOPLEFT", 16, -48)
+        frame.body:SetWordWrap(true)
+        frame.open = actionButton(frame, 252, function()
+            PTG.ui:Show()
+            frame:Hide()
+        end, true)
+        frame.open:SetPoint("BOTTOMLEFT", 16, 16)
+        frame.dismiss = actionButton(frame, 128, function() frame:Hide() end)
+        frame.dismiss:SetPoint("BOTTOMRIGHT", -16, 16)
+        frame.close = actionButton(frame, 24, function() frame:Hide() end)
+        frame.close:SetPoint("TOPRIGHT", -12, -8)
+        frame.close:SetHeight(24)
+        frame.close:SetText("×")
+        hoverText(frame.close)
+        tinsert(UISpecialFrames, "PressToGroupWelcome")
+    end
+    frame.title:SetText(self:L("welcome_title"))
+    frame.body:SetText(self:L("welcome_body"))
+    local height = frame.body:GetStringHeight()
+    frame.body:SetHeight(height)
+    frame:SetHeight(height + 114)
+    frame.open:SetText(self:L("welcome_open"))
+    frame.dismiss:SetText(self:L("welcome_dismiss"))
+    setHoverText(frame.close, self:L("close"))
+    frame:Show()
+    return true
+end
+
 local function check(parent, callback)
     local control = CreateFrame("CheckButton", nil, parent, "BackdropTemplate")
     control:SetSize(360, 32)
@@ -164,6 +205,108 @@ local function check(parent, callback)
     end)
     control:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(1, 1, 1, 0.12) end)
     return control
+end
+
+local function selectDungeon(control)
+    PTG.db.dungeons[control.dungeonID] = control:GetChecked() and true or nil
+    PTG.db.dungeonsInitialized = true
+    changed()
+end
+
+local function selectAllDungeons()
+    wipe(PTG.db.dungeons)
+    for _, dungeon in ipairs(PTG:GetDungeons()) do PTG.db.dungeons[dungeon.id] = true end
+    PTG.db.dungeonsInitialized = true
+    changed()
+end
+
+local function buildDungeonPicker(owner)
+    local picker = panel("PressToGroupDungeons", 384, 160, owner)
+    PTG.dungeonPicker = picker
+    picker:Hide()
+    picker:SetPoint("TOPLEFT", owner, "TOPRIGHT", 8, 0)
+    picker:SetMovable(false)
+    picker.drag:EnableMouse(false)
+    picker.title:SetWidth(236)
+    picker:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    picker:SetBackdropColor(0.069, 0.058, 0.047, 0.98)
+    picker:SetBackdropBorderColor(1, 1, 1, 0.16)
+    picker.title:SetTextColor(1, 1, 1)
+    picker.close = actionButton(picker, 24, function() picker:Hide() end)
+    picker.close:SetPoint("TOPRIGHT", -12, -8)
+    picker.close:SetHeight(24)
+    picker.close:SetText("×")
+    hoverText(picker.close)
+    picker.allDungeons = actionButton(picker, 65, selectAllDungeons)
+    picker.allDungeons:SetPoint("TOPRIGHT", -44, -8)
+    picker.allDungeons:SetHeight(24)
+    picker.dungeonHint = label(picker, "GameFontHighlightSmall", 352)
+    picker.dungeonHint:SetPoint("TOPLEFT", 16, -44)
+    picker.dungeonHint:SetTextColor(0.7, 0.7, 0.7)
+    picker.scroll = CreateFrame("ScrollFrame", "PressToGroupDungeonsScroll", picker, "UIPanelScrollFrameTemplate")
+    picker.scroll:SetPoint("TOPLEFT", 16, -84)
+    picker.scroll:SetPoint("BOTTOMRIGHT", -35, 14)
+    picker.content = CreateFrame("Frame", nil, picker.scroll)
+    picker.content:SetSize(328, 1)
+    picker.scroll:SetScrollChild(picker.content)
+    picker.dungeonEmpty = label(picker.content, "GameFontHighlightSmall", 328)
+    picker.dungeonEmpty:SetPoint("TOPLEFT", 0, 0)
+    picker.dungeonChecks = {}
+    function picker:Refresh()
+        self.title:SetText(PTG:L("dungeons"))
+        self.allDungeons:SetText(PTG:L("all_dungeons"))
+        self.dungeonHint:SetText(PTG:L("quick_dungeons_hint"))
+        setHoverText(self.close, PTG:L("close"))
+        local dungeons, selected, y, current = PTG:GetDungeons(), 0, 0, {}
+        for _, dungeon in ipairs(dungeons) do current[dungeon.id] = true end
+        for id, control in pairs(self.dungeonChecks) do
+            if not current[id] then control:Hide() end
+        end
+        self.dungeonEmpty:SetShown(#dungeons == 0)
+        if #dungeons == 0 then
+            self.dungeonEmpty:SetText(PTG:L("no_dungeons"))
+            y = -self.dungeonEmpty:GetStringHeight() - 8
+        end
+        for _, dungeon in ipairs(dungeons) do
+            local control = self.dungeonChecks[dungeon.id]
+            if not control then
+                control = check(self.content, selectDungeon)
+                control.dungeonID = dungeon.id
+                control:SetWidth(328)
+                control.text:SetWidth(282)
+                self.dungeonChecks[dungeon.id] = control
+            end
+            control.text:SetText(dungeon.name)
+            control:SetChecked(PTG.db.dungeons[dungeon.id] == true)
+            if control:GetChecked() then selected = selected + 1 end
+            local height = math.max(32, control.text:GetStringHeight() + 16)
+            control:SetHeight(height)
+            control:ClearAllPoints()
+            control:SetPoint("TOPLEFT", 0, y)
+            control:Show()
+            y = y - height - 6
+        end
+        self.allDungeons:SetEnabled(selected < #dungeons)
+        local contentHeight = math.max(1, -y)
+        local top = 44 + self.dungeonHint:GetStringHeight() + 12
+        self.content:SetHeight(contentHeight)
+        self:SetHeight(math.min(top + contentHeight + 14, 480, UIParent:GetHeight() - 32))
+        self.scroll:ClearAllPoints()
+        self.scroll:SetPoint("TOPLEFT", 16, -top)
+        self.scroll:SetPoint("BOTTOMRIGHT", -35, 14)
+        return selected, #dungeons
+    end
+    picker:SetScript("OnShow", function()
+        PTG.settingsUI:Hide()
+        picker:Refresh()
+    end)
+    tinsert(UISpecialFrames, "PressToGroupDungeons")
+end
+
+function PTG:ToggleDungeonPicker()
+    if self.ui and self.ui:IsShown() and self.dungeonPicker then
+        self.dungeonPicker:SetShown(not self.dungeonPicker:IsShown())
+    end
 end
 
 local function choiceStyle(control, selected)
@@ -439,14 +582,7 @@ local function buildSettings()
     settings.compositionHint = hint(compositionSection)
     settings.dungeonLabel = dungeonSection.heading
     settings.dungeonLabel:SetWidth(260)
-    settings.allDungeons = actionButton(dungeonSection, 65, function()
-        wipe(PTG.db.dungeons)
-        for _, dungeon in ipairs(PTG:GetDungeons()) do
-            PTG.db.dungeons[dungeon.id] = true
-        end
-        PTG.db.dungeonsInitialized = true
-        changed()
-    end)
+    settings.allDungeons = actionButton(dungeonSection, 65, selectAllDungeons)
     settings.allDungeons:SetHeight(26)
     settings.dungeonHint = hint(dungeonSection)
     settings.dungeonEmpty = hint(dungeonSection)
@@ -499,47 +635,54 @@ local function buildSettings()
         y = y - 42
         self.inputModeHint:SetText(PTG:L(db.inputMode == "key" and "input_mode_key_hint" or "input_mode_auto_hint"))
         place(self.inputModeHint, self.inputModeHint:GetStringHeight() + 12)
-        local key1, key2, keyError = PTG.Input.GetStepKeys()
-        self.bindingPrimary:SetText(keyError and PTG:L(keyError) or PTG:L("binding_primary", bindingKeyText(key1)))
-        place(self.bindingPrimary, self.bindingPrimary:GetStringHeight() + 8)
-        self.bindingSecondary:SetText(PTG:L("binding_secondary", bindingKeyText(key2)))
-        place(self.bindingSecondary, self.bindingSecondary:GetStringHeight() + 12)
-        local capture = PTG.bindingCapture
-        local pending = capture and capture.pending
-        local combat = InCombatLockdown()
-        self.bindingAssign:SetText(PTG:L("binding_assign"))
-        self.bindingAssign:SetEnabled(not combat and not capture)
-        self.bindingClear:SetText(PTG:L("binding_clear"))
-        self.bindingClear:SetEnabled(not combat and not capture and key1 ~= nil and not keyError)
-        self.bindingAssign:ClearAllPoints()
-        self.bindingAssign:SetPoint("TOPLEFT", section, "TOPLEFT", 12, y)
-        self.bindingClear:ClearAllPoints()
-        self.bindingClear:SetPoint("TOPLEFT", section, "TOPLEFT", 198, y)
-        y = y - 42
-        local message = self.bindingMessage or (combat and "binding_combat" or "binding_hint")
-        if pending then
-            local actionName = GetBindingName(pending.action)
-            self.bindingStatus:SetText(PTG:L("binding_conflict", bindingKeyText(pending.key), actionName))
-        elseif capture then
-            self.bindingStatus:SetText(PTG:L(capture.phase == "capture" and "binding_capture" or "binding_release"))
-        else
-            self.bindingStatus:SetText(PTG:L(message))
+        local showBindings = db.inputMode == "key"
+        for _, control in ipairs({self.bindingPrimary, self.bindingSecondary, self.bindingAssign, self.bindingClear,
+            self.bindingStatus, self.bindingScope, self.bindingConfirm, self.bindingCancel}) do
+            control:SetShown(showBindings)
         end
-        place(self.bindingStatus, self.bindingStatus:GetStringHeight() + 12)
-        self.bindingConfirm:SetShown(pending ~= nil)
-        self.bindingCancel:SetShown(capture ~= nil)
-        self.bindingConfirm:SetEnabled(not combat and pending ~= nil and not next(capture and capture.down or {}))
-        self.bindingConfirm:SetText(PTG:L("binding_replace"))
-        self.bindingCancel:SetText(PTG:L("cancel"))
-        if capture then
-            self.bindingConfirm:ClearAllPoints()
-            self.bindingConfirm:SetPoint("TOPLEFT", section, "TOPLEFT", 12, y)
-            self.bindingCancel:ClearAllPoints()
-            self.bindingCancel:SetPoint("TOPLEFT", section, "TOPLEFT", pending and 198 or 12, y)
+        if showBindings then
+            local key1, key2, keyError = PTG.Input.GetStepKeys()
+            self.bindingPrimary:SetText(keyError and PTG:L(keyError) or PTG:L("binding_primary", bindingKeyText(key1)))
+            place(self.bindingPrimary, self.bindingPrimary:GetStringHeight() + 8)
+            self.bindingSecondary:SetText(PTG:L("binding_secondary", bindingKeyText(key2)))
+            place(self.bindingSecondary, self.bindingSecondary:GetStringHeight() + 12)
+            local capture = PTG.bindingCapture
+            local pending = capture and capture.pending
+            local combat = InCombatLockdown()
+            self.bindingAssign:SetText(PTG:L("binding_assign"))
+            self.bindingAssign:SetEnabled(not combat and not capture)
+            self.bindingClear:SetText(PTG:L("binding_clear"))
+            self.bindingClear:SetEnabled(not combat and not capture and key1 ~= nil and not keyError)
+            self.bindingAssign:ClearAllPoints()
+            self.bindingAssign:SetPoint("TOPLEFT", section, "TOPLEFT", 12, y)
+            self.bindingClear:ClearAllPoints()
+            self.bindingClear:SetPoint("TOPLEFT", section, "TOPLEFT", 198, y)
             y = y - 42
+            local message = self.bindingMessage or (combat and "binding_combat" or "binding_hint")
+            if pending then
+                local actionName = GetBindingName(pending.action)
+                self.bindingStatus:SetText(PTG:L("binding_conflict", bindingKeyText(pending.key), actionName))
+            elseif capture then
+                self.bindingStatus:SetText(PTG:L(capture.phase == "capture" and "binding_capture" or "binding_release"))
+            else
+                self.bindingStatus:SetText(PTG:L(message))
+            end
+            place(self.bindingStatus, self.bindingStatus:GetStringHeight() + 12)
+            self.bindingConfirm:SetShown(pending ~= nil)
+            self.bindingCancel:SetShown(capture ~= nil)
+            self.bindingConfirm:SetEnabled(not combat and pending ~= nil and not next(capture and capture.down or {}))
+            self.bindingConfirm:SetText(PTG:L("binding_replace"))
+            self.bindingCancel:SetText(PTG:L("cancel"))
+            if capture then
+                self.bindingConfirm:ClearAllPoints()
+                self.bindingConfirm:SetPoint("TOPLEFT", section, "TOPLEFT", 12, y)
+                self.bindingCancel:ClearAllPoints()
+                self.bindingCancel:SetPoint("TOPLEFT", section, "TOPLEFT", pending and 198 or 12, y)
+                y = y - 42
+            end
+            self.bindingScope:SetText(PTG:L("binding_scope"))
+            place(self.bindingScope, self.bindingScope:GetStringHeight() + 20)
         end
-        self.bindingScope:SetText(PTG:L("binding_scope"))
-        place(self.bindingScope, self.bindingScope:GetStringHeight() + 20)
         self.roleLabel:SetText(PTG:L("role"))
         place(self.roleLabel, 20)
         self.autoRole.text:SetText(PTG:L("auto_role"))
@@ -594,11 +737,8 @@ local function buildSettings()
         for _, dungeon in ipairs(dungeons) do
             local control = self.dungeonChecks[dungeon.id]
             if not control then
-                control = check(dungeonSection, function(widget)
-                    db.dungeons[dungeon.id] = widget:GetChecked() and true or nil
-                    db.dungeonsInitialized = true
-                    changed()
-                end)
+                control = check(dungeonSection, selectDungeon)
+                control.dungeonID = dungeon.id
                 self.dungeonChecks[dungeon.id] = control
             end
             control.text:SetText(dungeon.name)
@@ -653,7 +793,10 @@ local function buildSettings()
         finish()
         content:SetHeight(-top)
     end
-    settings:SetScript("OnShow", function() settings:Refresh() end)
+    settings:SetScript("OnShow", function()
+        if PTG.dungeonPicker then PTG.dungeonPicker:Hide() end
+        settings:Refresh()
+    end)
     settings:HookScript("OnHide", function() PTG:CancelBindingCapture() end)
 end
 
@@ -702,9 +845,17 @@ function PTG:BuildUI()
     if self.ui then return end
     local compact = self.db.compactMode == true
     local frame = panel("PressToGroupFrame", compact and compactWidth or fullWidth, compact and compactHeight or fullHeight)
+    frame:Hide()
     self.ui = frame
-    frame:HookScript("OnHide", function() PTG:CancelBindingCapture() end)
-    tinsert(UISpecialFrames, "PressToGroupFrame")
+    frame.title:SetWordWrap(false)
+    frame:HookScript("OnHide", function()
+        PTG:CancelBindingCapture()
+        if not frame:IsShown() then
+            if PTG.dungeonPicker then PTG.dungeonPicker:Hide() end
+            if PTG:GetView().running then PTG:Stop() end
+        end
+    end)
+    frame:HookScript("OnShow", function() if PTG.welcomeUI then PTG.welcomeUI:Hide() end end)
     frame:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
     frame:SetBackdropColor(0.069, 0.058, 0.047, 0.98)
     frame:SetBackdropBorderColor(1, 1, 1, 0.16)
@@ -816,10 +967,13 @@ function PTG:BuildUI()
     frame.toggle:SetPoint("TOPLEFT", 16, -550)
     frame.step = actionButton(frame.full, 200, function() PTG:OnPress() end)
     frame.step:SetPoint("TOPLEFT", 224, -550)
-    frame.open = actionButton(frame.full, 200, function() PTG:OpenSearch() end)
+    frame.open = actionButton(frame.full, 132, function() PTG:OpenSearch() end)
     frame.open:SetPoint("BOTTOMLEFT", 16, 14)
     frame.open:SetHeight(22)
-    frame.settings = actionButton(frame.full, 200, function()
+    frame.dungeons = actionButton(frame, 132, function() PTG:ToggleDungeonPicker() end)
+    frame.dungeons:SetHeight(22)
+    hoverText(frame.dungeons)
+    frame.settings = actionButton(frame.full, 128, function()
         PTG.settingsUI:SetShown(not PTG.settingsUI:IsShown())
     end)
     frame.settings:SetPoint("BOTTOMRIGHT", -16, 14)
@@ -831,12 +985,32 @@ function PTG:BuildUI()
     hoverText(frame.close)
     frame.collapse = actionButton(frame, 24, function() PTG:SetCompactMode(not PTG.db.compactMode) end)
     frame.collapse:SetHeight(24)
+    frame.collapse:SetPoint("TOPRIGHT", -44, -8)
     hoverText(frame.collapse)
-    frame.compactApplications = label(frame, "GameFontHighlightSmall", 268)
+    frame.compactToggle = actionButton(frame, 24, function()
+        if PTG:GetView().running then PTG:Stop() else PTG:Start() end
+    end)
+    frame.compactToggle:SetHeight(24)
+    frame.compactToggle:SetPoint("TOPRIGHT", -76, -8)
+    frame.compactToggle.stopIcon = frame.compactToggle:CreateTexture(nil, "ARTWORK")
+    frame.compactToggle.stopIcon:SetSize(9, 9)
+    frame.compactToggle.stopIcon:SetPoint("CENTER", 0, 0)
+    frame.compactToggle.stopIcon:SetColorTexture(0.95, 0.32, 0.28, 1)
+    frame.compactToggle.startIcon = {}
+    for i = 0, 4 do
+        local strip = frame.compactToggle:CreateTexture(nil, "ARTWORK")
+        strip:SetSize(2, 10 - 2 * i)
+        strip:SetPoint("LEFT", 7 + 2 * i, 0)
+        strip:SetColorTexture(unpack(accent))
+        frame.compactToggle.startIcon[#frame.compactToggle.startIcon + 1] = strip
+    end
+    hoverText(frame.compactToggle)
+    frame.compactApplications = label(frame, "GameFontHighlightSmall", 116)
     frame.compactApplications:SetPoint("TOPLEFT", 16, -42)
     frame.compactApplications:SetHeight(16)
     hoverText(frame.drag)
     buildSettings()
+    buildDungeonPicker(frame)
     local minimap = CreateFrame("Button", "PressToGroupMinimapButton", Minimap)
     self.minimapButton = minimap
     minimap:SetSize(32, 32)
@@ -861,18 +1035,34 @@ function PTG:RefreshUI()
     local frame = self.ui
     if not frame then return end
     local view = self:GetView()
+    local escapeRegistered = false
+    for index = #UISpecialFrames, 1, -1 do
+        if UISpecialFrames[index] == "PressToGroupFrame" then
+            if view.running then table.remove(UISpecialFrames, index)
+            else escapeRegistered = true end
+        end
+    end
+    if not view.running and not escapeRegistered then tinsert(UISpecialFrames, "PressToGroupFrame") end
     local compact = self.db.compactMode == true
     frame.full:SetShown(not compact)
-    frame.close:SetShown(not compact)
     frame.compactApplications:SetShown(compact)
-    frame.collapse:ClearAllPoints()
-    frame.collapse:SetPoint("TOPRIGHT", compact and -12 or -44, -8)
-    frame.collapse:SetText(compact and "+" or "−")
+    frame.dungeons:ClearAllPoints()
+    frame.dungeons:SetWidth(compact and 144 or 132)
+    if compact then frame.dungeons:SetPoint("TOPRIGHT", -12, -38)
+    else frame.dungeons:SetPoint("BOTTOMLEFT", 156, 14) end
+    local selectedDungeons, totalDungeons = self.dungeonPicker:Refresh()
+    frame.dungeons:SetText(self:L("quick_dungeons", selectedDungeons, totalDungeons))
+    setHoverText(frame.dungeons, self:L("quick_dungeons_tooltip"))
+    frame.compactToggle:SetShown(compact)
+    frame.compactToggle.stopIcon:SetShown(view.running)
+    for _, strip in ipairs(frame.compactToggle.startIcon) do strip:SetShown(not view.running) end
+    setHoverText(frame.compactToggle, self:L(view.running and "compact_stop" or "compact_start"))
+    frame.collapse:SetText(compact and "+" or "-")
     setHoverText(frame.collapse, self:L(compact and "expand_window" or "compact_window"))
     frame.drag:ClearAllPoints()
     frame.drag:SetPoint("TOPLEFT", 8, -5)
-    frame.drag:SetPoint("TOPRIGHT", compact and -44 or -76, -5)
-    frame.title:SetWidth(compact and 232 or 328)
+    frame.drag:SetPoint("TOPRIGHT", compact and -108 or -76, -5)
+    frame.title:SetWidth(compact and 168 or 328)
     local kind = stateKinds[view.state] or "unknown"
     frame.title:SetText(compact and self:L("status_" .. kind) or "|TInterface\\AddOns\\PressToGroup\\Media\\Icon:22:22|t " .. self:L("title"))
     if compact then frame.title:SetTextColor(unpack(tones[kind])) else frame.title:SetTextColor(1, 1, 1) end

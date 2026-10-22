@@ -413,6 +413,7 @@ local function reportError(reason)
 end
 
 function PTG:Start()
+    if self.ui then self.ui:Show() end
     self.engine:Start()
     self.engine:Plan()
     self:RefreshUI()
@@ -502,7 +503,13 @@ function PTG:OpenSearch()
 end
 
 function PTG:ToggleWindow()
-    if self.ui then self.ui:SetShown(not self.ui:IsShown()) end
+    if not self.ui then return end
+    self.ui:SetShown(not self.ui:IsShown())
+    -- OnHide may not fire again while UIParent is already hidden.
+    if not self.ui:IsShown() then
+        if self.dungeonPicker then self.dungeonPicker:Hide() end
+        if self.engine.running then self:Stop() end
+    end
 end
 
 function PTG:BindsLocale()
@@ -513,7 +520,7 @@ end
 
 function PTG:PrintLog()
     local view = self:GetView()
-    print("PressToGroup 0.1.17: " .. self:L(view.state, unpack(view.stateArgs or {})))
+    print("PressToGroup 0.1.28: " .. self:L(view.state, unpack(view.stateArgs or {})))
     for _, entry in ipairs(self.engine.log) do
         print(string.format("[%0.1f] %s", entry.at, self:L(entry.key, unpack(entry.args))))
     end
@@ -593,7 +600,7 @@ end
 
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
-events:SetScript("OnEvent", function(_, event, name)
+events:SetScript("OnEvent", function(_, event, name, isReloadingUi)
     if event == "ADDON_LOADED" then
         if name ~= addonName then
             if PTG.engine and (name == "Blizzard_GroupFinder" or name == "PremadeGroupsFilter") then
@@ -603,7 +610,7 @@ events:SetScript("OnEvent", function(_, event, name)
         end
         if PTG.engine then return end
         initialize()
-        for _, value in ipairs({"PLAYER_ENTERING_WORLD", "PLAYER_SPECIALIZATION_CHANGED", "GROUP_ROSTER_UPDATE", "LFG_LIST_SEARCH_RESULTS_RECEIVED",
+        for _, value in ipairs({"PLAYER_ENTERING_WORLD", "PLAYER_LOGOUT", "PLAYER_SPECIALIZATION_CHANGED", "GROUP_ROSTER_UPDATE", "LFG_LIST_SEARCH_RESULTS_RECEIVED",
             "LFG_LIST_SEARCH_FAILED", "LFG_LIST_SEARCH_RESULT_UPDATED", "LFG_LIST_APPLICATION_STATUS_UPDATED",
             "LFG_LIST_AVAILABILITY_UPDATE", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "UPDATE_BINDINGS",
             "PARTY_LEADER_CHANGED", "PLAYER_ROLES_ASSIGNED", "ROLE_CHANGED_INFORM", "LFG_LIST_JOINED_GROUP",
@@ -611,6 +618,10 @@ events:SetScript("OnEvent", function(_, event, name)
             "LFG_ROLE_CHECK_ROLE_CHOSEN", "LFG_ROLE_UPDATE"}) do
             events:RegisterEvent(value)
         end
+        return
+    end
+    if event == "PLAYER_LOGOUT" then
+        PTG.db.reopenOnReload = PTG.engine.running == true
         return
     end
     if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" or event == "UPDATE_BINDINGS" then
@@ -629,6 +640,15 @@ events:SetScript("OnEvent", function(_, event, name)
             PTG:LoadDungeons()
         end
         PTG.engine:Plan()
+        if event == "PLAYER_ENTERING_WORLD" then
+            local reopen = isReloadingUi == true and PTG.db.reopenOnReload == true
+            PTG.db.reopenOnReload = nil
+            if PressToGroupWelcomeShown ~= true and PTG:ShowWelcome() then
+                PressToGroupWelcomeShown = true
+            elseif reopen then
+                PTG.ui:Show()
+            end
+        end
     end)
     if not ok then reportError(reason) end
     PTG:RefreshUI()

@@ -170,13 +170,24 @@ hooksecurefunc = function(target, key, callback)
 end
 
 local nativeSearch, nativeClick = C_LFGList.Search, SecureActionButton_OnClick
+local welcomeResult = true
 local function loadSession(db)
     PTG, frames, PressToGroupDB = {}, {}, db
     C_LFGList.Search, SecureActionButton_OnClick = nativeSearch, nativeClick
     for _, file in ipairs({"Locale", "Filters", "Input", "Engine"}) do
         assert(loadfile(root .. "/" .. file .. ".lua"))("PressToGroup", PTG)
     end
-    function PTG:BuildUI() end
+    function PTG:BuildUI()
+        self.ui = {shown = false, showCalls = 0}
+        function self.ui:Show() self.shown, self.showCalls = true, self.showCalls + 1 end
+        function self.ui:Hide() self.shown = false end
+        function self.ui:IsShown() return self.shown end
+        function self.ui:SetShown(shown) if shown then self:Show() else self:Hide() end end
+    end
+    function PTG:ShowWelcome()
+        self.welcomeShows = (self.welcomeShows or 0) + 1
+        return welcomeResult
+    end
     function PTG:BuildGroupFinderButton() self.groupFinderBuilds = (self.groupFinderBuilds or 0) + 1 end
     function PTG:RefreshUI() end
     assert(loadfile(root .. "/WoW.lua"))("PressToGroup", PTG)
@@ -729,8 +740,8 @@ for _, compact in ipairs({true, false}) do
     check(not PTG.ui:IsShown() and PTG.db.compactMode == compact, "/ptg hides the current representation without changing its mode")
     SlashCmdList.PRESSTOGROUP("")
     check(PTG.ui:IsShown() and PTG.db.compactMode == compact and #calls == windowCalls
-        and PTG.engine.revision == windowRevision and PTG.engine.running and PTG.engine.pending == pendingOperation,
-        "/ptg preserves the running assistant and pending operation without performing LFG actions")
+        and PTG.engine.revision == windowRevision + 1 and not PTG.engine.running and PTG.engine.pending == pendingOperation,
+        "/ptg stops on closing and reopens without restart while preserving the pending operation and issuing no LFG actions")
     loadSession(savedWindow)
     check(PTG.db.compactMode == compact and PTG.db.position.point == "TOPLEFT",
         "the chosen window mode survives another addon session")
@@ -796,7 +807,6 @@ for _, mode in ipairs({"key", "auto"}) do
     PTG:Start()
     local presses = 0
     PTG.engine.Press = function() presses = presses + 1 end
-    PTG.ui = {shown = false}
     PTG.db.compactMode = true
     for _, key in ipairs({"W", "S", "A", "D", "Q", "E", "SPACE"}) do
         movementKey(key, true)
@@ -804,7 +814,7 @@ for _, mode in ipairs({"key", "auto"}) do
         movementKey(key, false)
     end
     check(presses == (mode == "auto" and 7 or 0),
-        "movement edges respect the mode independently of hidden and compact windows: " .. mode)
+        "movement edges respect the input mode with the open compact window: " .. mode)
     local before = presses
     SecureActionButton_OnClick(action, "LeftButton", true, true, true)
     check(presses == before + (mode == "auto" and 1 or 0), "the actionbar hook respects input mode: " .. mode)
@@ -1076,4 +1086,196 @@ PTG:OnPress()
 check(calls[#calls].kind == "search", "the explicit step path also searches for a company in key mode")
 emit("LFG_LIST_JOINED_GROUP")
 check(not PTG.engine.running, "native join notification stops actions before a delayed roster update")
+
+PressToGroupWelcomeShown = nil
+inputSession()
+check(not PTG.welcomeShows and PressToGroupWelcomeShown == nil,
+    "welcome waits for entering the world rather than addon loading")
+local welcomeCalls, welcomeRevision = #calls, PTG.engine.revision
+emit("PLAYER_ENTERING_WORLD")
+check(PTG.welcomeShows == 1 and PressToGroupWelcomeShown == true and not PTG.engine.running
+    and #calls == welcomeCalls and PTG.engine.revision == welcomeRevision,
+    "first world entry displays and records the account welcome without enabling or stepping the engine")
+emit("PLAYER_ENTERING_WORLD")
+emit("LFG_LIST_AVAILABILITY_UPDATE")
+check(PTG.welcomeShows == 1, "zoning and later addon events do not repeat the welcome")
+local returningSettings = PTG.db
+returningSettings.compactMode, returningSettings.position = true, {point = "TOPLEFT", x = 17, y = -23}
+loadSession(returningSettings)
+emit("PLAYER_ENTERING_WORLD")
+check(not PTG.welcomeShows and PTG.db.compactMode and PTG.db.position.x == 17 and PTG.db.position.y == -23,
+    "reload preserves the account marker and character window preferences without repeating the welcome")
+loadSession({locale = "enUS"})
+emit("PLAYER_ENTERING_WORLD")
+check(not PTG.welcomeShows and PressToGroupWelcomeShown == true,
+    "a different character on the same account does not receive another welcome")
+for _, marker in ipairs({false, 0, "done", {}}) do
+    PressToGroupWelcomeShown = marker
+    loadSession({role = "HEALER", autoRole = false})
+    emit("PLAYER_ENTERING_WORLD")
+    emit("PLAYER_ENTERING_WORLD")
+    check(PTG.welcomeShows == 1 and PressToGroupWelcomeShown == true,
+        "an absent or invalid old marker migrates to one recorded account welcome")
+end
+PressToGroupWelcomeShown, welcomeResult = nil, false
+loadSession()
+emit("PLAYER_ENTERING_WORLD")
+check(PTG.welcomeShows == 1 and PressToGroupWelcomeShown == nil,
+    "an unsuccessful welcome display does not mark it as seen")
+welcomeResult = true
+emit("PLAYER_ENTERING_WORLD")
+check(PTG.welcomeShows == 2 and PressToGroupWelcomeShown == true,
+    "a later successful display can record a previously unseen welcome")
+for _, compact in ipairs({false, true}) do
+    PressToGroupWelcomeShown = true
+    inputSession()
+    PTG.db.compactMode, PTG.db.position = compact, {point = "TOPLEFT", x = 137, y = -91}
+    PTG:Start()
+    LFGListFrame.shown = true
+    PTG.engine:Plan()
+    check(PTG.engine.running and PTG.engine.state == "manual_search", "a paused enabled assistant qualifies for window restoration")
+    local beforeLogout = #calls
+    PTG.ui:Show()
+    emit("PLAYER_LOGOUT")
+    check(PTG.db.reopenOnReload == true and PTG.engine.running and #calls == beforeLogout,
+        "logout records a visible enabled assistant without stopping or performing LFG actions")
+    local saved = PTG.db
+    local position = saved.position
+    LFGListFrame.shown = false
+    apps[1], results[1] = {status = "applied"}, {partyGUID = "Existing-Party", name = "Existing application"}
+    loadSession(saved)
+    check(not PTG.ui.shown and not PTG.engine.running, "restoration waits until world entry and never resumes the engine")
+    local reloadCalls = #calls
+    emit("PLAYER_ENTERING_WORLD", false, true)
+    check(PTG.ui.shown and PTG.ui.showCalls == 1 and not PTG.engine.running and not PTG.welcomeShows
+        and saved.reopenOnReload == nil and #calls == reloadCalls,
+        "reload reopens the window once without welcome, enabling, or LFG operations")
+    check(PTG.db.compactMode == compact and PTG.db.position == position and position.x == 137 and position.y == -91,
+        "restoration preserves the saved full or compact view and position")
+    local restored = PTG:GetView()
+    check(restored.active == 1 and #restored.applications == 1 and restored.applications[1].status == "applied"
+        and not restored.applications[1].owned and next(PTG.engine.owned) == nil,
+        "restoration reads live applications without recovering ownership or cancelling them")
+    PTG.ui:Hide()
+    emit("PLAYER_ENTERING_WORLD", false, false)
+    emit("PLAYER_ENTERING_WORLD", false, true)
+    emit("LFG_LIST_AVAILABILITY_UPDATE")
+    update(0.5)
+    check(not PTG.ui.shown and PTG.ui.showCalls == 1 and not PTG.engine.running and #calls == reloadCalls,
+        "consumed restoration cannot reopen on zones, duplicate events, availability changes or timers")
+    emit("PLAYER_LOGOUT")
+    check(saved.reopenOnReload == false, "reloading again without Start records the stopped state")
+    loadSession(saved)
+    emit("PLAYER_ENTERING_WORLD", false, true)
+    check(not PTG.ui.shown and not PTG.engine.running and saved.reopenOnReload == nil,
+        "the next reload while stopped keeps the window hidden")
+end
+
+for _, stopped in ipairs({"manual", "automatic"}) do
+    inputSession()
+    PTG:Start()
+    if stopped == "manual" then PTG:Stop() else PTG.engine:Stop("company_changed") end
+    PTG.ui:Show()
+    emit("PLAYER_LOGOUT")
+    local saved = PTG.db
+    check(saved.reopenOnReload == false, "only actual running state is saved after a stop: " .. stopped)
+    loadSession(saved)
+    emit("PLAYER_ENTERING_WORLD", false, true)
+    check(not PTG.ui.shown and not PTG.engine.running, "a visible stopped window is not restored: " .. stopped)
+end
+
+inputSession()
+PTG:Start()
+emit("PLAYER_LOGOUT")
+local coldSettings = PTG.db
+loadSession(coldSettings)
+emit("PLAYER_ENTERING_WORLD", true, false)
+check(not PTG.ui.shown and not PTG.engine.running and coldSettings.reopenOnReload == nil,
+    "a normal login consumes a previous running marker without opening or enabling the assistant")
+emit("PLAYER_LOGOUT")
+loadSession(coldSettings)
+emit("PLAYER_ENTERING_WORLD", false, true)
+check(not PTG.ui.shown, "a cold-login marker cannot leak into the following stopped reload")
+
+for _, marker in ipairs({false, 1, "true", {}}) do
+    loadSession({reopenOnReload = marker})
+    emit("PLAYER_ENTERING_WORLD", false, true)
+    check(not PTG.ui.shown and PTG.db.reopenOnReload == nil, "only a boolean true restoration marker can open the window")
+end
+loadSession({reopenOnReload = true})
+emit("PLAYER_ENTERING_WORLD")
+check(not PTG.ui.shown and PTG.db.reopenOnReload == nil, "missing reload metadata does not restore a window")
+loadSession({reopenOnReload = true})
+emit("PLAYER_ENTERING_WORLD", false, "true")
+check(not PTG.ui.shown, "non-boolean reload metadata does not restore a window")
+
+PressToGroupWelcomeShown = nil
+loadSession({reopenOnReload = true})
+emit("PLAYER_ENTERING_WORLD", false, true)
+check(PTG.welcomeShows == 1 and not PTG.ui.shown and PTG.db.reopenOnReload == nil and not PTG.engine.running,
+    "an unseen welcome keeps priority over restoration without opening two automatic windows")
+emit("PLAYER_ENTERING_WORLD", false, true)
+check(PTG.welcomeShows == 1 and not PTG.ui.shown, "recording welcome does not defer restoration to a later event")
+for _, compact in ipairs({false, true}) do
+    for _, mode in ipairs({"auto", "key"}) do
+        inputSession(mode)
+        PTG.db.compactMode, PTG.db.position = compact, {point = "TOPLEFT", x = 34, y = -56}
+        local position = PTG.db.position
+        apps[1], results[1] = {status = "applied"}, {partyGUID = "Existing-Party", name = "Existing application"}
+        SlashCmdList.PRESSTOGROUP("start")
+        check(PTG.ui.shown and PTG.engine.running and #calls == 0,
+            "slash Start opens the saved full or compact window without performing LFG actions: " .. mode)
+        local logCount = #PTG.engine.log
+        SlashCmdList.PRESSTOGROUP("")
+        check(not PTG.ui.shown and not PTG.engine.running and #PTG.engine.log == logCount + 1
+            and PTG.engine.log[#PTG.engine.log].key == "stopped" and apps[1].status == "applied" and #calls == 0,
+            "slash window toggle stops once and preserves the existing application: " .. mode)
+        movementKey("W", true)
+        movementKey("W", false)
+        PTG:OnPress()
+        check(#calls == 0 and not PTG.engine.running, "closed windows cannot advance via automatic or explicit input")
+        SlashCmdList.PRESSTOGROUP("")
+        check(PTG.ui.shown and not PTG.engine.running and PTG.db.compactMode == compact
+            and PTG.db.position == position and apps[1].status == "applied" and #calls == 0,
+            "reopening restores the saved panel without restarting the assistant")
+        SlashCmdList.PRESSTOGROUP("start")
+        PTG:ToggleWindow()
+        emit("PLAYER_LOGOUT")
+        local saved = PTG.db
+        check(saved.reopenOnReload == false, "closing before logout records the stopped state")
+        loadSession(saved)
+        emit("PLAYER_ENTERING_WORLD", false, true)
+        check(not PTG.ui.shown and not PTG.engine.running and apps[1].status == "applied" and #calls == 0,
+            "a reload after closing keeps the assistant and window off while preserving the native application")
+    end
+end
+
+inputSession()
+PTG:Start()
+local plainHide = PTG.ui.Hide
+function PTG.ui:Hide()
+    plainHide(self)
+    PTG:Stop()
+end
+local beforeHookStop = #PTG.engine.log
+PTG:ToggleWindow()
+check(not PTG.engine.running and #PTG.engine.log == beforeHookStop + 1,
+    "the toggle fallback does not repeat Stop when OnHide already stopped the assistant")
+for _, running in ipairs({false, true}) do
+    inputSession()
+    PTG.ui:Show()
+    PTG.dungeonPicker = {shown = true}
+    function PTG.dungeonPicker:Hide() self.shown = false end
+    local pending = {kind = "apply", id = 42}
+    PTG.engine.running, PTG.engine.pending = running, pending
+    local revision = PTG.engine.revision
+    -- The UI stub has no OnHide, as when an already hidden UIParent suppresses it.
+    PTG:ToggleWindow()
+    check(not PTG.ui.shown and not PTG.dungeonPicker.shown and not PTG.engine.running
+        and PTG.engine.revision == revision + (running and 1 or 0) and PTG.engine.pending == pending and #calls == 0,
+        "closing under hidden UIParent dismisses the picker even when already stopped, without losing pending operations")
+    PTG:ToggleWindow()
+    check(PTG.ui.shown and not PTG.dungeonPicker.shown and not PTG.engine.running and #calls == 0,
+        "the toggle fallback never restores quick selection on reopening")
+end
 print("wow: " .. checks .. " checks passed")

@@ -282,9 +282,16 @@ function PTG:PrintLog() self.logOpened = true end
 function PTG:ToggleWindow() self.windowToggles = (self.windowToggles or 0) + 1 end
 
 assert(loadfile(root .. "/UI.lua"))("PressToGroup", PTG)
+check(PTG:ShowWelcome() == false and PTG.welcomeUI == nil, "welcome waits until the main UI exists")
 local initialCandidate, initialApplications = view.nextCandidate, view.applications
 view.nextCandidate, view.applications = nil, {}
 PTG:BuildUI()
+check(not PTG.ui:IsShown() and PTG.welcomeUI == nil and not PTG.stopped,
+    "initial main window is hidden without stopping and welcome is built only on demand")
+check(PTG.dungeonPicker and not PTG.dungeonPicker:IsShown(), "quick dungeon selection starts closed")
+PTG:RefreshUI()
+check(not PTG.ui:IsShown(), "regular UI refresh does not open the initial main window")
+PTG.ui:Show()
 check(PTG.ui.toggle.text == PTG:L("start") and PTG.ui.step.text == PTG:L("step")
     and PTG.ui.settings.text == PTG:L("settings"), "initial empty search completes button labels")
 check(PTG.ui.empty:IsShown() and not PTG.ui.rows[1]:IsShown() and not PTG.ui.rows[5]:IsShown(),
@@ -339,7 +346,7 @@ for _, name in ipairs(UISpecialFrames) do
     if name == "PressToGroupFrame" then escapes = escapes + 1 end
     if name == "PressToGroupSettings" then settingsEscapes = settingsEscapes + 1 end
 end
-check(escapes == 1, "main window is registered for Escape once")
+check(escapes == 1, "the stopped main window is registered for Escape exactly once")
 check(settingsEscapes == 1, "settings remain registered for Escape exactly once")
 check(PTG.ui.width == 440 and PTG.ui.height == 620, "search window has room for readable sections and five rows")
 local drag
@@ -350,7 +357,7 @@ check(drag and PTG.ui.width + drag.point[2] < PTG.ui.width + PTG.ui.close.point[
     "the title drag area ends before the close button's mouse area")
 PTG.ui.close.scripts.OnClick()
 check(not PTG.ui:IsShown() and not PTG.started and not PTG.stopped and not PTG.steps,
-    "closing the window only hides it without changing the assistant")
+    "closing the stopped window does not call Stop again")
 PTG.ui:Show()
 check(PTG.ui.status.text == PTG:L("waiting_search", 6), "state arguments are formatted")
 check(PTG.ui.role.text == "Роль: Лекарь / Авто", "main window shows the effective role and auto mode in Russian")
@@ -422,7 +429,7 @@ check(PTG.db.locale == "enUS" and PTG.db.languages.enUS and PTG.db.dungeons[101]
 check(paint(PTG.settingsUI.localeButtons[3]) ~= paint(PTG.settingsUI.localeButtons[1]),
     "selecting another interface language moves the selected visual")
 minimap.scripts.OnEnter(minimap)
-check(GameTooltip.line == "Show / hide the assistant window", "minimap tooltip follows a language change")
+check(GameTooltip.line == PTG:L("binding_window"), "minimap tooltip follows a language change")
 minimap.scripts.OnLeave()
 check(PTG.settingsUI.replaceAfterLabel.text == PTG:L("replace_after")
     and PTG.settingsUI.replaceAfterHint.text == PTG:L("replace_after_hint") and replacement:GetText() == "90",
@@ -809,9 +816,9 @@ check(PTG.ui == originalFrame and PTG.db.compactMode == true and frame.width == 
 check(frame:GetLeft() == left and frame:GetTop() == top and PTG.db.position.point == "TOPLEFT"
     and PTG.db.position.x == 220 and PTG.db.position.y == -110,
     "changing mode preserves and saves the upper left corner without requiring a drag")
-check(not frame.full:IsShown() and not frame.close:IsVisible() and frame.collapse:IsVisible()
+check(not frame.full:IsShown() and frame.close:IsVisible() and frame.collapse:IsVisible()
     and frame.collapse:GetText() == "+" and frame.compactApplications:IsVisible(),
-    "compact mode exposes its restore control and count while hiding full-window content")
+    "compact mode exposes close, restore and count while hiding full-window content")
 check(frame.drag.point[2] < frame.collapse.point[2] - frame.collapse.width,
     "the compact drag area leaves the restore button clickable")
 for _, control in ipairs({frame.searchPanel, frame.statusPanel, frame.candidatePanel, frame.applicationLabel,
@@ -842,11 +849,11 @@ PTG:RefreshUI()
 check(frame.compactApplications:GetText() == "Applications: 4/6" and frame.title:GetText() == "Invitation"
     and GameTooltip:GetText():find(PTG:L("invited"), 1, true),
     "compact counts use the live limit and the hovered tooltip follows the interface language")
-frame:Hide()
-check(not GameTooltip:IsShown(), "hiding the compact window also hides its child's active tooltip")
-frame:Show()
-check(PTG.db.compactMode and frame.width == 300 and not frame.full:IsVisible(),
-    "hiding and showing the window preserves the compact representation")
+UIParent:Hide()
+check(not GameTooltip:IsShown(), "temporarily hiding the interface also hides the compact tooltip")
+UIParent:Show()
+check(frame:IsShown() and PTG.db.compactMode and frame.width == 300 and not frame.full:IsVisible(),
+    "temporarily hiding the interface preserves the compact representation")
 view.applications = {}
 for i = 1, 5 do
     view.applications[i] = {id = 100 + i, name = "Updated compact application " .. i, status = "applied", owned = i == 1}
@@ -858,7 +865,7 @@ check(not frame.rows[1]:IsVisible() and not frame.rows[5]:IsVisible()
 frame.collapse.scripts.OnClick()
 check(not PTG.db.compactMode and frame.width == 440 and frame.height == 620
     and frame.full:IsVisible() and frame.close:IsVisible() and not frame.compactApplications:IsVisible()
-    and frame.collapse:GetText() == "−", "restore returns the complete full-size interface")
+    and frame.collapse:GetText() == "-", "restore returns the complete full-size interface")
 check(frame.drag.point[2] < frame.collapse.point[2] - frame.collapse.width,
     "the full drag area leaves the collapse button clickable")
 check(not GameTooltip:IsShown() and frame:GetLeft() == left and frame:GetTop() == top,
@@ -932,19 +939,29 @@ check(PTG.db.position.point == "TOPLEFT" and PTG.db.position.x == left - UIParen
     and PTG.db.position.y == top - UIParent:GetTop(), "dragging compact mode saves its actual upper left corner")
 local function rebuildWindow()
     PTG.ui:Hide()
+    for index = #UISpecialFrames, 1, -1 do
+        if UISpecialFrames[index] == PTG.dungeonPicker.name then table.remove(UISpecialFrames, index) end
+    end
     PTG.ui, PTG.settingsUI, PTG.minimapButton, PTG.groupFinderButton = nil, nil, nil, nil
+    PTG.dungeonPicker = nil
     PTG:BuildUI()
     frame = PTG.ui
 end
+view.running = false
 rebuildWindow()
 check(PTG.db.compactMode and frame.width == 300 and frame.height == 72
-    and frame:GetLeft() == left and frame:GetTop() == top and not frame.full:IsVisible(),
-    "a new UI session restores the compact size and position directly")
+    and frame:GetLeft() == left and frame:GetTop() == top and not frame.full:IsShown() and not frame:IsShown()
+    and not PTG.dungeonPicker:IsShown(),
+    "a new UI session restores compact size and position while remaining hidden")
+frame:Show()
+check(frame:IsVisible() and not frame.full:IsVisible(), "manually opening a restored compact window preserves its representation")
 PTG:SetCompactMode(false)
 rebuildWindow()
 check(not PTG.db.compactMode and frame.width == 440 and frame.height == 620
-    and frame:GetLeft() == left and frame:GetTop() == top and frame.full:IsVisible(),
-    "a mode change without a drag survives a new full UI session without position drift")
+    and frame:GetLeft() == left and frame:GetTop() == top and frame.full:IsShown() and not frame:IsShown(),
+    "a mode change without a drag restores a hidden full UI session without position drift")
+frame:Show()
+check(frame.full:IsVisible(), "manually opening a restored full window exposes the existing content")
 PTG.db.position = {point = "CENTER", x = 75, y = -45}
 rebuildWindow()
 local centerX, centerY = frame:GetCenter()
@@ -967,13 +984,30 @@ do
         PTG.steps, PTG.started, PTG.stopped, PTG.settingsChanged, PTG.cancelled
     check(#settings.inputModeButtons == 2 and settings.inputModeButtons[1].selected
         and not settings.inputModeButtons[1]:IsEnabled(), "input offers two modes with automatic selected")
+    local function checkBindingBlock(shown)
+        for _, name in ipairs({"bindingPrimary", "bindingSecondary", "bindingAssign", "bindingClear", "bindingStatus", "bindingScope"}) do
+            check(settings[name]:IsShown() == shown, "binding block visibility follows input mode: " .. name)
+        end
+        if not shown then
+            check(not settings.bindingConfirm:IsShown() and not settings.bindingCancel:IsShown(),
+                "automatic mode also hides binding confirmation and cancellation")
+        end
+    end
+    checkBindingBlock(false)
+    local _, automaticRoleY = offsets(settings.roleLabel)
+    local _, automaticHintY = offsets(settings.inputModeHint)
+    check(automaticRoleY == automaticHintY - settings.inputModeHint:GetStringHeight() - 12,
+        "automatic mode leaves no empty binding area before role settings")
+    settings.inputModeButtons[2].scripts.OnClick()
+    check(PTG.db.inputMode == "key" and settings.inputModeButtons[2].selected
+        and not settings.inputModeButtons[2]:IsEnabled(), "key mode delegates selection to SetInputMode")
+    checkBindingBlock(true)
+    local _, keyRoleY = offsets(settings.roleLabel)
+    check(keyRoleY < automaticRoleY, "key mode expands the card for binding settings")
     check(settings.bindingPrimary:GetText():find("F8", 1, true)
         and settings.bindingSecondary:GetText():find("F9", 1, true), "settings show both existing step keys")
     check(settings.bindingScope:GetText() == PTG:L("binding_scope")
         and settings.bindingClear:GetText() == PTG:L("binding_clear"), "binding scope and primary-only clearing are explicit")
-    settings.inputModeButtons[2].scripts.OnClick()
-    check(PTG.db.inputMode == "key" and settings.inputModeButtons[2].selected
-        and not settings.inputModeButtons[2]:IsEnabled(), "key mode delegates selection to SetInputMode")
     check(PTG.ui.status:GetText():find("F8", 1, true)
         and PTG:L("activation_4"):find("F8", 1, true), "key-mode search and activation hints name the current primary key")
     stepKey1, stepKey2 = nil, nil
@@ -990,6 +1024,7 @@ do
         and PTG:L("ready_search") == PTG:L("ready_search_key_unavailable"), "unreadable bindings are not reported as unassigned")
     stepKey1, stepKey2, stepKeyError = "F8", "F9", nil
     local function startCapture()
+        assert(settings.bindingAssign:IsVisible(), "assignment starts from the visible key-mode block")
         settings.bindingAssign.scripts.OnClick()
         check(PTG.bindingCapture and PTG.bindingCapture.phase == "capture"
             and settings.bindingListener.keyboardEnabled and settings.bindingListener.propagateKeyboard == false,
@@ -1121,7 +1156,10 @@ do
         PTG.ui:Show()
         startCapture()
         keyDown("LCTRL")
+        local wasRunning = view.running
+        if window == PTG.ui then view.running = false end
         window:Hide()
+        view.running = wasRunning
         check(PTG.bindingCapture and PTG.bindingCapture.phase == "release", "hiding either PTG window cancels the pending assignment")
         keyUp("LCTRL")
         stoppedCapture("hidden windows keep release cleanup alive on the separate listener")
@@ -1172,9 +1210,25 @@ do
     stoppedCapture("collapsing the main window cancels key capture")
     PTG:SetCompactMode(false)
     settings:Show()
+    bindingAction = "ACTIONBUTTON1"
     startCapture()
+    keyDown("X")
+    callsBefore = #assignCalls
+    local clearsBefore = clearCalls
     settings.inputModeButtons[1].scripts.OnClick()
+    checkBindingBlock(false)
+    check(PTG.bindingCapture and PTG.bindingCapture.phase == "release" and not PTG.bindingCapture.pending
+        and #assignCalls == callsBefore and clearCalls == clearsBefore,
+        "automatic mode discards a pending conflict without editing bindings and keeps the release guard")
+    keyUp("X")
     stoppedCapture("switching input modes cancels capture")
+    settings.inputModeButtons[2].scripts.OnClick()
+    bindingAction = ""
+    checkBindingBlock(true)
+    check(settings.bindingPrimary:GetText():find("F8", 1, true)
+        and settings.bindingSecondary:GetText():find("F9", 1, true)
+        and #assignCalls == callsBefore and clearCalls == clearsBefore,
+        "returning to key mode restores both displayed bindings without assigning or clearing")
     startCapture()
     keyDown("LCTRL")
     combat = true
@@ -1203,9 +1257,12 @@ do
         PTG.db.locale = locale
         settings.inputModeButtons[2].scripts.OnClick()
         PTG:RefreshUI()
+        checkBindingBlock(true)
         check(settings.inputModeButtons[2]:GetText() == PTG:L("input_mode_key")
             and settings.bindingPrimary:GetText() == PTG:L("binding_primary", "F8"), "mode and key labels follow interface language: " .. locale)
         settings.inputModeButtons[1].scripts.OnClick()
+        checkBindingBlock(false)
+        checkCards("automatic mode / " .. locale)
         check(PTG:L("ready_search") == dictionaries[locale].ready_search
             and PTG:L("activation_4") == dictionaries[locale].activation_4, "automatic hints mention abilities, movement and jump: " .. locale)
     end
@@ -1298,5 +1355,471 @@ do
     check(PTG.steps == savedSteps and PTG.started == savedStarts and PTG.stopped == savedStops
         and PTG.settingsChanged == savedChanges and PTG.cancelled == savedCancel,
         "rendering party summaries and all party statuses never issues LFG actions or invalidates settings")
+end
+do
+    view.running = false
+    local savedSteps, savedStarts, savedStops, savedChanges, savedCancel, savedToggles =
+        PTG.steps, PTG.started, PTG.stopped, PTG.settingsChanged, PTG.cancelled, PTG.windowToggles
+    PTG:SetCompactMode(true)
+    frame = PTG.ui
+    frame:Hide()
+    local savedPosition, savedLeft, savedTop = PTG.db.position, frame:GetLeft(), frame:GetTop()
+    check(PTG:ShowWelcome() == true, "welcome reports that it was shown")
+    local welcome = PTG.welcomeUI
+    check(welcome and welcome.name == "PressToGroupWelcome" and welcome.parent == UIParent
+        and welcome:IsShown() and not frame:IsShown(), "welcome is an independent named panel without opening the assistant")
+    for _, locale in ipairs({"ruRU", "enUS"}) do
+        PTG.db.locale = locale
+        welcome.body.stringHeight = locale == "ruRU" and 180 or 144
+        check(PTG:ShowWelcome() == true and PTG.welcomeUI == welcome, "showing welcome again reuses its existing frame")
+        check(welcome.title:GetText() == PTG:L("welcome_title") and welcome.body:GetText() == PTG:L("welcome_body")
+            and welcome.open:GetText() == PTG:L("welcome_open") and welcome.dismiss:GetText() == PTG:L("welcome_dismiss")
+            and welcome.close:GetText() == "×", "welcome title, body and actions follow interface language: " .. locale)
+        check(welcome.body:GetText():find("PressToGroup", 1, true) and welcome.body:GetText():find("Mythic+", 1, true)
+            and welcome.body:GetText():find(PTG:L("input_mode_auto"), 1, true)
+            and welcome.body:GetText():find(PTG:L("input_mode_key"), 1, true), "welcome explains the purpose and both existing input modes")
+        check(welcome.width == 420 and welcome.body.width == 388 and welcome.body.wordWrap == true
+            and welcome.height == welcome.body.stringHeight + 114 and welcome.body.height == welcome.body.stringHeight,
+            "welcome height follows the wrapped localized body")
+        check(welcome.body:GetTop() - welcome.body.height > welcome.open:GetTop()
+            and welcome.open:GetLeft() + welcome.open.width < welcome.dismiss:GetLeft()
+            and welcome.dismiss:GetLeft() + welcome.dismiss.width < welcome:GetLeft() + welcome.width,
+            "welcome body and footer have separate bounded areas without overlap")
+        welcome.close.scripts.OnEnter(welcome.close)
+        check(GameTooltip:GetText() == PTG:L("close"), "welcome close tooltip follows interface language")
+        welcome.close.scripts.OnLeave()
+        PTG:RefreshUI()
+        check(not frame:IsShown() and welcome:IsShown(), "refresh neither opens the assistant nor dismisses welcome")
+    end
+    local registered = 0
+    for _, name in ipairs(UISpecialFrames) do
+        if name == "PressToGroupWelcome" then registered = registered + 1 end
+    end
+    check(registered == 1, "the reused welcome panel is registered for Escape exactly once")
+    for _, dismiss in ipairs({welcome.close, welcome.dismiss}) do
+        PTG:ShowWelcome()
+        dismiss.scripts.OnClick()
+        check(not welcome:IsShown() and not frame:IsShown(), "welcome close and Got it dismiss only welcome")
+    end
+    PTG:ShowWelcome()
+    welcome:Hide()
+    check(not welcome:IsShown() and not frame:IsShown(), "the registered Escape hide path leaves the assistant hidden")
+    PTG:ShowWelcome()
+    welcome.open.scripts.OnClick()
+    check(frame:IsShown() and not welcome:IsShown() and PTG.db.compactMode
+        and frame.width == 300 and frame.height == 72 and frame:GetLeft() == savedLeft and frame:GetTop() == savedTop
+        and PTG.db.position == savedPosition, "welcome CTA explicitly opens the saved compact window at its saved position")
+    PTG:ShowWelcome()
+    welcome.open.scripts.OnClick()
+    check(frame:IsShown() and not welcome:IsShown() and PTG.windowToggles == savedToggles,
+        "welcome CTA keeps an already opened assistant visible without toggling")
+    PTG:ShowWelcome()
+    welcome.dismiss.scripts.OnClick()
+    check(frame:IsShown() and not welcome:IsShown(), "dismissing welcome does not hide an already opened assistant")
+    frame:Hide()
+    PTG:ShowWelcome()
+    frame:Show()
+    check(frame:IsShown() and not welcome:IsShown(), "manual main-window opening dismisses welcome")
+    check(PTG.steps == savedSteps and PTG.started == savedStarts and PTG.stopped == savedStops
+        and PTG.settingsChanged == savedChanges and PTG.cancelled == savedCancel
+        and PTG.db.position == savedPosition and PTG.db.compactMode,
+        "showing, dismissing and opening from welcome never starts, steps, cancels or changes search settings")
+end
+do
+    local originalStart, originalStop, startCalls, stopCalls = PTG.Start, PTG.Stop, 0, 0
+    function PTG:Start()
+        startCalls = startCalls + 1
+        originalStart(self)
+        view.running, view.state = true, "ready_search"
+        self:RefreshUI()
+    end
+    function PTG:Stop()
+        stopCalls = stopCalls + 1
+        originalStop(self)
+        view.running, view.state = false, "off"
+        self:RefreshUI()
+    end
+    local savedSteps, savedChanges, savedCancel = PTG.steps, PTG.settingsChanged, PTG.cancelled
+    frame = PTG.ui
+    PTG:SetCompactMode(false)
+    frame:Show()
+    check(not frame.compactToggle:IsShown(), "the compact toggle is absent from the full view")
+    view.running, view.state, view.stateArgs = false, "off", {}
+    view.applications = {{id = 42, name = "Existing application", status = "applied", owned = true}}
+    PTG:SetCompactMode(true)
+    local applications, application = view.applications, view.applications[1]
+    local position, left, top = PTG.db.position, frame:GetLeft(), frame:GetTop()
+    local toggle = frame.compactToggle
+    local function checkPhase(running, message)
+        check(toggle:IsVisible() and toggle:IsEnabled() and toggle.stopIcon:IsShown() == running
+            and toggle.tooltip == PTG:L(running and "compact_stop" or "compact_start"), message)
+        for _, strip in ipairs(toggle.startIcon) do
+            check(strip:IsShown() == not running, message .. ": play icon visibility")
+        end
+    end
+    check(toggle.width == 24 and toggle.height == 24 and toggle:GetText() == ""
+        and toggle.stopIcon.color[1] > toggle.stopIcon.color[2] and #toggle.startIcon == 5,
+        "compact toggle uses a 24-pixel control with distinct texture icons instead of glyphs")
+    for i, strip in ipairs(toggle.startIcon) do
+        check(strip.width == 2 and strip.height == 12 - 2 * i and strip.point[2] == 5 + 2 * i
+            and strip.color[2] > strip.color[1], "green texture strips form a right-facing play icon")
+    end
+    check(toggle:GetLeft() + toggle.width < frame.collapse:GetLeft()
+        and frame.collapse:GetLeft() + frame.collapse.width < frame.close:GetLeft()
+        and frame.width + frame.drag.point[2] < toggle:GetLeft() - frame:GetLeft()
+        and 8 + 7 + frame.title.width < toggle:GetLeft() - frame:GetLeft() and frame.title.wordWrap == false,
+        "compact title, drag area, toggle, expand and close controls have separate horizontal space")
+    for _, locale in ipairs({"ruRU", "enUS"}) do
+        PTG.db.locale = locale
+        PTG:RefreshUI()
+        checkPhase(false, "stopped compact mode offers Start: " .. locale)
+        toggle.scripts.OnEnter(toggle)
+        check(GameTooltip:GetText() == PTG:L("compact_start"), "Start tooltip follows interface language: " .. locale)
+        local starts, stops = startCalls, stopCalls
+        toggle.scripts.OnClick()
+        check(startCalls == starts + 1 and stopCalls == stops and view.running,
+            "stopped compact toggle calls the existing Start action exactly once")
+        checkPhase(true, "running compact mode offers Stop: " .. locale)
+        check(GameTooltip:GetText() == PTG:L("compact_stop"), "Start immediately updates the hovered tooltip to Stop")
+        view.state = "manual_search"
+        PTG:RefreshUI()
+        checkPhase(true, "a paused running assistant still offers Stop")
+        toggle.scripts.OnClick()
+        check(startCalls == starts + 1 and stopCalls == stops + 1 and not view.running,
+            "paused compact toggle calls the existing Stop action exactly once")
+        checkPhase(false, "Stop restores the enabled Start button")
+        check(GameTooltip:GetText() == PTG:L("compact_start"), "Stop immediately updates the hovered tooltip to Start")
+    end
+    PTG:Start()
+    checkPhase(true, "an external Start updates the compact action")
+    view.running, view.state = false, "company_changed"
+    PTG:RefreshUI()
+    checkPhase(false, "an externally stopped assistant offers Start even with a non-off status")
+    check(GameTooltip:GetText() == PTG:L("compact_start"), "external state changes update the hovered tooltip")
+    PTG.db.locale = "ruRU"
+    PTG:RefreshUI()
+    check(GameTooltip:GetText() == PTG:L("compact_start"), "hovered tooltip follows a language change without re-entering")
+    check(frame:IsShown() and PTG.db.compactMode and frame.width == 300 and frame.height == 72
+        and frame:GetLeft() == left and frame:GetTop() == top and PTG.db.position == position
+        and view.applications == applications and view.applications[1] == application
+        and application.status == "applied" and PTG.settingsChanged == savedChanges and PTG.cancelled == savedCancel
+        and PTG.steps == savedSteps, "compact actions preserve the window, mode, position and applications without stepping")
+    toggle.scripts.OnLeave()
+    check(not GameTooltip:IsShown(), "leaving the compact toggle hides its tooltip")
+    toggle.scripts.OnEnter(toggle)
+    PTG:SetCompactMode(false)
+    check(not toggle:IsShown() and not GameTooltip:IsShown() and frame.width == 440 and frame.collapse:GetText() == "-",
+        "returning to full view hides compact toggle and tooltip and preserves the ASCII collapse label")
+    PTG:SetCompactMode(true)
+    toggle.scripts.OnEnter(toggle)
+    frame:Hide()
+    check(not GameTooltip:IsShown(), "hiding the compact window hides the toggle tooltip")
+    PTG.Start, PTG.Stop = originalStart, originalStop
+end
+do
+    local originalStart, originalStop, startCalls, stopCalls = PTG.Start, PTG.Stop, 0, 0
+    function PTG:Start()
+        startCalls = startCalls + 1
+        originalStart(self)
+        view.running, view.state = true, "ready_search"
+        self:RefreshUI()
+    end
+    function PTG:Stop()
+        stopCalls = stopCalls + 1
+        originalStop(self)
+        view.running, view.state = false, "off"
+        self:RefreshUI()
+    end
+    local savedSteps, savedChanges, savedCancel = PTG.steps, PTG.settingsChanged, PTG.cancelled
+    for _, locale in ipairs({"ruRU", "enUS"}) do
+        PTG.db.locale = locale
+        for _, compact in ipairs({false, true}) do
+            frame:Show()
+            PTG:SetCompactMode(compact)
+            PTG:Start()
+            local stops = stopCalls
+            for _, close in ipairs({PTG.settingsUI.close, PTG.settingsUI.dismiss}) do
+                PTG.settingsUI:Show()
+                close.scripts.OnClick()
+                check(view.running and stopCalls == stops, "closing either settings control keeps the assistant running")
+            end
+            for _, close in ipairs({PTG.welcomeUI.dismiss, PTG.welcomeUI.close}) do
+                PTG:ShowWelcome()
+                close.scripts.OnClick()
+                check(view.running and stopCalls == stops, "closing welcome keeps the assistant running")
+            end
+            PTG:ShowWelcome()
+            PTG.welcomeUI:Hide()
+            check(view.running and stopCalls == stops, "the welcome Escape hide path does not stop the assistant")
+            PTG:SetCompactMode(not compact)
+            PTG:SetCompactMode(compact)
+            check(view.running and stopCalls == stops, "switching full and compact views does not stop the assistant")
+            local applications, position = view.applications, PTG.db.position
+            local left, top = frame:GetLeft(), frame:GetTop()
+            UIParent:Hide()
+            check(frame:IsShown() and not frame:IsVisible() and view.running and stopCalls == stops,
+                "temporarily hiding UIParent does not close the main window or stop the assistant")
+            UIParent:Show()
+            check(frame:IsVisible() and view.running and stopCalls == stops,
+                "restoring UIParent keeps the assistant running")
+            check(frame.close:IsVisible() and frame.close:IsEnabled() and frame.close.width == 24 and frame.close.height == 24,
+                "the close button is available in either main view: " .. locale)
+            local starts = startCalls
+            frame.close.scripts.OnEnter(frame.close)
+            check(GameTooltip:GetText() == PTG:L("hide_window"), "close explains stopping with applications kept: " .. locale)
+            frame.close.scripts.OnClick()
+            check(not frame:IsShown() and not GameTooltip:IsShown() and not view.running and stopCalls == stops + 1
+                and startCalls == starts
+                and PTG.db.compactMode == compact and PTG.db.position == position
+                and frame:GetLeft() == left and frame:GetTop() == top and view.applications == applications
+                and PTG.steps == savedSteps
+                and PTG.settingsChanged == savedChanges and PTG.cancelled == savedCancel,
+                "closing the main window stops once and preserves applications, position and representation")
+            frame:Show()
+            check(frame:IsVisible() and not view.running and startCalls == starts and stopCalls == stops + 1,
+                "ordinary opening preserves the stopped state")
+            frame.close.scripts.OnClick()
+            frame:Hide()
+            check(stopCalls == stops + 1, "closing an already stopped window does not call Stop again")
+            frame:Show()
+            PTG:Start()
+            frame:Hide()
+            check(not view.running and stopCalls == stops + 2,
+                "a direct main Hide uses the same one-stop lifecycle as the close button")
+        end
+    end
+    local escapes = 0
+    for _, name in ipairs(UISpecialFrames) do
+        if name == "PressToGroupFrame" then escapes = escapes + 1 end
+    end
+    check(escapes == 1, "the stopped main window remains registered for Escape exactly once")
+    frame:Show()
+    check(not view.running and PTG.db.compactMode and frame.width == 300 and frame.height == 72 and frame.close:IsVisible(),
+        "reopening preserves the stopped compact representation with its close button")
+    PTG.Start, PTG.Stop = originalStart, originalStop
+end
+do
+    local originalStop, stopCalls = PTG.Stop, 0
+    function PTG:Stop()
+        stopCalls = stopCalls + 1
+        originalStop(self)
+        view.running, view.state = false, "off"
+        self:RefreshUI()
+    end
+    local windows = {PressToGroupFrame = frame, PressToGroupSettings = PTG.settingsUI, PressToGroupWelcome = PTG.welcomeUI}
+    local function escape()
+        for _, name in ipairs(UISpecialFrames) do
+            local window = windows[name]
+            if window and window:IsShown() then window:Hide() end
+        end
+    end
+    local function registrations(name)
+        local count = 0
+        for _, registered in ipairs(UISpecialFrames) do
+            if registered == name then count = count + 1 end
+        end
+        return count
+    end
+    tinsert(UISpecialFrames, 1, "ForeignEscapeFirst")
+    tinsert(UISpecialFrames, "ForeignEscapeLast")
+    local otherEntries = {}
+    for _, name in ipairs(UISpecialFrames) do
+        if name ~= "PressToGroupFrame" then otherEntries[#otherEntries + 1] = name end
+    end
+    local savedStarts, savedSteps, savedChanges, savedCancel = PTG.started, PTG.steps, PTG.settingsChanged, PTG.cancelled
+    for _, compact in ipairs({false, true}) do
+        for _, phase in ipairs({{false, "off"}, {true, "ready_search"}, {true, "manual_search"},
+            {true, "search_conflict"}, {false, "company_changed"}}) do
+            view.running, view.state = phase[1], phase[2]
+            frame:Show()
+            for _ = 1, 5 do
+                PTG:RefreshUI()
+                PTG:SetCompactMode(not compact)
+                PTG:SetCompactMode(compact)
+            end
+            check(registrations("PressToGroupFrame") == (phase[1] and 0 or 1),
+                "Escape registration follows running without duplicates across refreshes and view changes: " .. phase[2])
+            check(registrations("PressToGroupSettings") > 0 and registrations("PressToGroupWelcome") == 1,
+                "settings and welcome retain their Escape registrations")
+            local applications, position = view.applications, PTG.db.position
+            local left, top = frame:GetLeft(), frame:GetTop()
+            PTG.settingsUI:Show()
+            PTG:ShowWelcome()
+            escape()
+            check(frame:IsShown() == phase[1] and view.running == phase[1] and stopCalls == 0,
+                "Escape closes only a stopped main window, including after automatic Stop: " .. phase[2])
+            check(not PTG.settingsUI:IsShown() and not PTG.welcomeUI:IsShown(),
+                "Escape still closes settings and welcome while protecting the running main window")
+            check(PTG.db.compactMode == compact and PTG.db.position == position
+                and frame:GetLeft() == left and frame:GetTop() == top and view.applications == applications
+                and PTG.started == savedStarts and PTG.steps == savedSteps
+                and PTG.settingsChanged == savedChanges and PTG.cancelled == savedCancel,
+                "Escape preserves the assistant, applications and saved view without starting or stepping")
+        end
+    end
+    local otherIndex = 0
+    for _, name in ipairs(UISpecialFrames) do
+        if name ~= "PressToGroupFrame" then
+            otherIndex = otherIndex + 1
+            check(name == otherEntries[otherIndex], "Escape registration keeps other entries in their original order")
+        end
+    end
+    check(otherIndex == #otherEntries, "Escape registration neither adds nor removes other entries")
+    PTG.Stop = originalStop
+end
+do
+    local picker, settings = PTG.dungeonPicker, PTG.settingsUI
+    local savedDungeons = PTG.GetDungeons
+    local actions = {Start = 0, Stop = 0, OnPress = 0, Cancel = 0, SettingsChanged = 0}
+    local originals = {}
+    for name in pairs(actions) do
+        originals[name] = PTG[name]
+        PTG[name] = function(self, ...)
+            actions[name] = actions[name] + 1
+            if name == "Stop" then view.running, view.state = false, "off" end
+            return originals[name](self, ...)
+        end
+    end
+    frame:Show()
+    view.running, view.state = true, "ready_search"
+    PTG.db.dungeons = {[101] = true, [999] = true}
+    local applications = view.applications
+    for _, locale in ipairs({"ruRU", "enUS"}) do
+        PTG.db.locale = locale
+        for _, compact in ipairs({false, true}) do
+            PTG:SetCompactMode(compact)
+            check(frame.dungeons.parent == frame and frame.dungeons:IsVisible()
+                and frame.dungeons:GetText() == (locale == "ruRU" and "Подземелья 1/2" or "Dungeons 1/2"),
+                "quick selection is available in either view and counts only current dungeon IDs: " .. locale)
+            if compact then
+                check(frame.compactApplications:GetLeft() + frame.compactApplications.width <= frame.dungeons:GetLeft()
+                    and frame.dungeons:GetLeft() + frame.dungeons.width <= frame:GetLeft() + frame.width,
+                    "compact application and dungeon counts have separate bounded areas: " .. locale)
+            else
+                check(frame.open:GetLeft() + frame.open.width <= frame.dungeons:GetLeft()
+                    and frame.dungeons:GetLeft() + frame.dungeons.width <= frame.settings:GetLeft()
+                    and frame.settings:GetLeft() + frame.settings.width <= frame:GetLeft() + frame.width,
+                    "full footer keeps search, dungeons and settings separate: " .. locale)
+            end
+            frame.dungeons.scripts.OnClick()
+            check(picker:IsVisible() and picker.parent == frame and not settings:IsShown(),
+                "the quick selection button opens its panel beside the main window")
+            frame.dungeons.scripts.OnClick()
+            check(not picker:IsShown() and view.running, "the same button dismisses only quick selection")
+        end
+    end
+    check(actions.SettingsChanged == 0 and actions.Stop == 0 and actions.Start == 0
+        and actions.OnPress == 0 and actions.Cancel == 0, "opening and closing quick selection never changes filters or acts on LFG")
+    PTG:SetCompactMode(false)
+    frame.dungeons.scripts.OnClick()
+    local function select(id, selected)
+        local control = picker.dungeonChecks[id]
+        control:SetChecked(selected)
+        control.scripts.OnClick(control)
+    end
+    select(101, false)
+    check(PTG.db.dungeons[101] == nil and PTG.db.dungeons[999] and picker:IsShown()
+        and actions.SettingsChanged == 1 and frame.dungeons:GetText() == "Dungeons 0/2",
+        "a quick change applies once, updates the count and keeps the panel open")
+    select(102, true)
+    check(PTG.db.dungeons[102] and picker:IsShown()
+        and actions.SettingsChanged == 2, "sequential quick changes share the existing dungeon selection")
+    settings:Show()
+    check(not picker:IsShown() and settings:IsShown() and not settings.dungeonChecks[101]:GetChecked()
+        and settings.dungeonChecks[102]:GetChecked(), "opening settings dismisses quick selection and displays its current selections")
+    settings.dungeonChecks[101]:SetChecked(true)
+    settings.dungeonChecks[101].scripts.OnClick(settings.dungeonChecks[101])
+    check(picker.dungeonChecks[101]:GetChecked() and frame.dungeons:GetText() == "Dungeons 2/2"
+        and not picker.allDungeons:IsEnabled(), "settings changes refresh the hidden picker and main count")
+    PTG:SetInputMode("key")
+    settings.bindingAssign.scripts.OnClick()
+    check(PTG.bindingCapture ~= nil, "key capture is active before opening quick selection")
+    frame.dungeons.scripts.OnClick()
+    check(picker:IsShown() and not settings:IsShown() and not PTG.bindingCapture,
+        "opening quick selection hides settings and cancels unfinished key capture")
+    select(101, false)
+    local changed = actions.SettingsChanged
+    picker.allDungeons.scripts.OnClick()
+    check(PTG.db.dungeons[101] and PTG.db.dungeons[102] and PTG.db.dungeons[999] == nil
+        and PTG.db.dungeonsInitialized and picker:IsShown() and not picker.allDungeons:IsEnabled()
+        and actions.SettingsChanged == changed + 1, "quick All selects only current IDs and applies once")
+    select(101, false)
+    select(102, false)
+    check(next(PTG.db.dungeons) == nil and PTG.db.dungeonsInitialized and picker:IsShown()
+        and picker.allDungeons:IsEnabled() and frame.dungeons:GetText() == "Dungeons 0/2",
+        "quick selection permits an intentional empty filter instead of restoring every dungeon")
+    function PTG:GetDungeons() return {} end
+    PTG:RefreshUI()
+    check(picker.dungeonEmpty:IsShown() and not picker.dungeonChecks[101]:IsShown()
+        and not picker.dungeonChecks[102]:IsShown() and not picker.allDungeons:IsEnabled()
+        and frame.dungeons:GetText() == "Dungeons 0/0", "missing season data hides stale quick rows and updates the count")
+    local late = {}
+    for id = 301, 320 do late[#late + 1] = {id = id, name = string.rep("Длинное название подземелья ", 5) .. id} end
+    function PTG:GetDungeons() return late end
+    PTG:RefreshUI()
+    local longRow = picker.dungeonChecks[301]
+    longRow.text.stringHeight = 72
+    PTG:RefreshUI()
+    local _, longY = offsets(longRow)
+    local _, nextY = offsets(picker.dungeonChecks[302])
+    check(not picker.dungeonEmpty:IsShown() and not picker.dungeonChecks[101]:IsShown()
+        and longRow:IsShown() and frame.dungeons:GetText() == "Dungeons 0/20",
+        "late season data replaces old quick rows without counting saved IDs")
+    check(longRow.text:GetText() == late[1].name and longRow.text.wordWrap ~= false
+        and longRow.height >= longRow.text:GetStringHeight() + 16 and longY - longRow.height >= nextY,
+        "quick selection preserves complete wrapped names and separates expanded rows")
+    check(picker.width == 384 and picker.height <= 480 and picker.content.height > picker.height
+        and picker.scroll and picker.content.width == 328, "a long quick list uses bounded scroll content")
+    UIParent:SetHeight(240)
+    PTG:RefreshUI()
+    check(picker.height <= UIParent:GetHeight(), "the quick panel also fits a shorter UIParent")
+    UIParent:SetHeight(1080)
+    PTG.GetDungeons = savedDungeons
+    PTG:RefreshUI()
+    check(not longRow:IsShown() and picker.dungeonChecks[101]:IsShown(), "returning season data hides cached quick rows")
+    local left, top = frame:GetLeft(), frame:GetTop()
+    for _, compact in ipairs({true, false}) do
+        PTG:SetCompactMode(compact)
+        check(picker:IsShown() and picker:IsVisible() and picker.point[2] == frame
+            and frame:GetLeft() == left and frame:GetTop() == top,
+            "view changes retain the open quick panel anchored to the main window")
+    end
+    changed = actions.SettingsChanged
+    UIParent:Hide()
+    check(picker:IsShown() and not picker:IsVisible() and frame:IsShown() and view.running and actions.Stop == 0,
+        "Alt-Z temporarily hides quick selection without changing its shown state or stopping")
+    UIParent:Show()
+    check(picker:IsVisible() and view.running, "restoring the interface restores the open quick selection")
+    picker.close.scripts.OnClick()
+    check(not picker:IsShown() and view.running and actions.Stop == 0 and actions.SettingsChanged == changed,
+        "the picker close control only dismisses its own panel")
+    local registered = 0
+    for _, name in ipairs(UISpecialFrames) do if name == picker.name then registered = registered + 1 end end
+    check(picker.name and registered == 1, "quick selection has its own single Escape registration")
+    for _, running in ipairs({true, false}) do
+        view.running = running
+        frame:Show()
+        PTG:RefreshUI()
+        frame.dungeons.scripts.OnClick()
+        for _, name in ipairs(UISpecialFrames) do
+            if name == picker.name then picker:Hide()
+            elseif name == frame.name then frame:Hide() end
+        end
+        check(not picker:IsShown() and frame:IsShown() == running and view.running == running and actions.Stop == 0,
+            "Escape closes quick selection while preserving the main window's running rule")
+    end
+    frame:Show()
+    view.running = true
+    PTG:RefreshUI()
+    frame.dungeons.scripts.OnClick()
+    frame.close.scripts.OnClick()
+    check(not frame:IsShown() and not picker:IsShown() and not view.running and actions.Stop == 1,
+        "explicit main closure dismisses quick selection and stops once")
+    frame:Show()
+    check(not picker:IsShown() and actions.Stop == 1 and not view.running,
+        "reopening the main window keeps quick selection closed and the assistant stopped")
+    check(view.applications == applications and actions.Start == 0 and actions.OnPress == 0 and actions.Cancel == 0
+        and actions.SettingsChanged == changed, "quick panel lifecycle preserves applications without LFG actions or extra filter changes")
+    for name, original in pairs(originals) do PTG[name] = original end
 end
 print("ui_test: " .. checks .. " checks passed")
