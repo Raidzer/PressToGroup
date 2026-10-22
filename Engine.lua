@@ -14,6 +14,12 @@ local function terminal(app)
     return app and not app.pending and statuses[app.status] == true
 end
 
+function Engine.ParseReplacementAge(value)
+    if type(value) ~= "number" and type(value) ~= "string" then return nil end
+    value = tonumber(value)
+    if value and value > 0 and value < math.huge and value % 1 == 0 then return value end
+end
+
 function Engine.New(api, settings)
     return setmetatable({api = api, settings = settings, running = false, revision = 0,
         results = {}, applications = {}, owned = {}, blocked = {}, log = {}, found = 0,
@@ -121,7 +127,7 @@ function Engine:Reconcile()
         local app = seen[op.identity] or self.api:ReadApplication(op.id)
         local same = app and app.identity == op.identity
         if op.kind == "apply" and same and app.status == "applied" and not app.pending then
-            self.owned[op.identity] = {id = app.id, at = now}
+            self.owned[op.identity] = {id = app.id, at = now, role = op.role}
             self.pending = nil
             self:Log("applied")
         elseif op.kind == "apply" and same and app.status == "invited" then
@@ -225,12 +231,21 @@ function Engine:Plan()
     if self.pending then self:SetState(self.pending.kind == "apply" and "wait_apply" or "wait_cancel"); return end
     if self.search then self:SetState("searching"); return end
 
+    for _, app in ipairs(self.applications) do
+        local own = app.identity and self.owned[app.identity]
+        if app.owned and own and own.role and self.api:IsRoleFull(app.id, app.identity, own.role) == true then
+            self:SetState("ready_cancel_role_full")
+            return "cancel", app
+        end
+    end
+
     local candidate = self:Candidate()
     self.nextCandidate = candidate
     if candidate then
+        local replaceAfter = Engine.ParseReplacementAge(self.settings.replaceAfter) or 180
         local oldest
         for _, app in ipairs(self.applications) do
-            if app.owned and app.age >= 180 and (not oldest or app.age > oldest.age) then oldest = app end
+            if app.owned and app.age >= replaceAfter and (not oldest or app.age > oldest.age) then oldest = app end
         end
         if oldest then
             self:SetState("ready_cancel")
@@ -266,11 +281,16 @@ function Engine:Press()
         ok, reason = self.api:Search(self.settings)
         if not ok then self:SearchFailed(reason) end
     else
+        if self.state == "ready_cancel_role_full" then self:Log("cancel_role_full") end
         self.pending = {kind = kind, id = group.id, identity = group.identity, at = now}
         self:SetState(kind == "apply" and "wait_apply" or "wait_cancel")
         self:Log(kind == "apply" and "apply_sent" or "cancel_sent")
-        if kind == "apply" then ok, reason = self.api:Apply(group.id, self.settings.role)
-        else ok, reason = self.api:Cancel(group.id) end
+        if kind == "apply" then
+            self.pending.role = self.settings.role
+            ok, reason = self.api:Apply(group.id, self.pending.role)
+        else
+            ok, reason = self.api:Cancel(group.id)
+        end
         if not ok then
             self.pending, self.running, self.problem = nil, false, "operation_unknown"
             self.blocked[group.identity] = true

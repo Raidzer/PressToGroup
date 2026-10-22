@@ -4,7 +4,7 @@
 ## Notes: Mythic+ group search and applications on your game inputs.
 ## Notes-ruRU: Поиск групп Mythic+ и подача заявок от ваших игровых нажатий.
 ## Author: Raidzer
-## Version: 0.1.4
+## Version: 0.1.15
 ## OptionalDeps: Blizzard_GroupFinder
 ## SavedVariablesPerCharacter: PressToGroupDB
 
@@ -14,4 +14,3 @@ Input.lua
 Engine.lua
 UI.lua
 WoW.lua
-Bindings.xml

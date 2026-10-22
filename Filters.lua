@@ -24,6 +24,20 @@ local function count(value)
     return number(value) and value % 1 == 0
 end
 
+function F.IsRoleFull(group, role)
+    if type(group) ~= "table" or not CAPACITY[role]
+        or not count(group.numMembers) or group.numMembers == 0 then return nil end
+    local counts = group.roleCounts
+    if type(counts) ~= "table" then return nil end
+    local total = 0
+    for memberRole, capacity in pairs(CAPACITY) do
+        if not count(counts[memberRole]) or counts[memberRole] > capacity then return nil end
+        total = total + counts[memberRole]
+    end
+    if total ~= group.numMembers then return nil end
+    return counts[role] >= CAPACITY[role]
+end
+
 function F.Eligible(group, settings, player)
     settings, player = settings or {}, player or {}
     if type(group) ~= "table" then return false, "unknown_group" end
@@ -42,17 +56,10 @@ function F.Eligible(group, settings, player)
 
     local role = settings.role or player.role
     if not CAPACITY[role] then return false, "unknown_role" end
+    local roleFull = F.IsRoleFull(group, role)
+    if roleFull == nil then return false, "unknown_group" end
+    if roleFull then return false, "role_full" end
     local counts = group.roleCounts
-    if type(counts) ~= "table" then return false, "unknown_group" end
-    local total = 0
-    for memberRole, capacity in pairs(CAPACITY) do
-        if not count(counts[memberRole]) or counts[memberRole] > capacity then
-            return false, "unknown_group"
-        end
-        total = total + counts[memberRole]
-    end
-    if total ~= group.numMembers then return false, "unknown_group" end
-    if counts[role] >= CAPACITY[role] then return false, "role_full" end
 
     if settings.dungeons and settings.dungeons[group.activityID] ~= true then return false, "dungeon" end
     local minRating = settings.minRating or 0
@@ -74,9 +81,29 @@ function F.Eligible(group, settings, player)
                 complete = false
             end
         end
-        if (settings.requireLust and not lust) or (settings.requireBrez and not brez) then
+        local needLust, needBrez = settings.requireLust and not lust, settings.requireBrez and not brez
+        if needLust or needBrez then
+            local remaining = group.roleRemaining
+            if type(remaining) ~= "table" then return false, "unknown_group" end
+            local slots, lustSlots, knownSlots = 0, 0, true
+            for memberRole, capacity in pairs(CAPACITY) do
+                local available = remaining[memberRole]
+                if count(available) and available <= capacity - counts[memberRole]
+                    and (memberRole ~= role or available > 0) then
+                    available = available - (memberRole == role and 1 or 0)
+                    slots = slots + available
+                    if memberRole ~= "TANK" then lustSlots = lustSlots + available end
+                else
+                    if memberRole == role then return false, "unknown_group" end
+                    knownSlots = false
+                end
+            end
+            -- No class in our capability model supplies both effects, so each needs its own slot.
+            local needed = (needLust and 1 or 0) + (needBrez and 1 or 0)
+            if slots >= needed and (not needLust or lustSlots > 0) then return true end
             if not complete then return false, "unknown_members" end
-            if settings.requireLust and not lust then return false, "no_lust" end
+            if not knownSlots then return false, "unknown_group" end
+            if needLust and lustSlots == 0 then return false, "no_lust" end
             return false, "no_brez"
         end
     end

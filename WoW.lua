@@ -8,6 +8,10 @@ local function public(value, kind)
     return not (issecretvalue and issecretvalue(value)) and type(value) == kind
 end
 
+local function validRole(role)
+    return public(role, "string") and (role == "TANK" or role == "HEALER" or role == "DAMAGER")
+end
+
 local function locked()
     return C_ChatInfo and C_ChatInfo.InChatMessagingLockdown and C_ChatInfo.InChatMessagingLockdown()
 end
@@ -32,6 +36,7 @@ function API:Context()
     if locked() then return "chat_lockdown" end
     if not C or not C.Search or not C.GetSearchResultPlayerInfo then return "unsupported" end
     if LFGListFrame and LFGListFrame:IsVisible() then return "manual_search" end
+    if not validRole(PTG.db.role) then return "no_role" end
     if not PTG.activities or not next(PTG.activities) then return "unavailable" end
     local selected = false
     for id in pairs(PTG.activities) do
@@ -57,8 +62,10 @@ end
 
 function API:Player()
     local _, class = UnitClass("player")
-    local spec = C_SpecializationInfo.GetSpecialization()
-    return {class = class, specID = spec and C_SpecializationInfo.GetSpecializationInfo(spec), role = PTG.db.role}
+    local spec = native(C_SpecializationInfo and C_SpecializationInfo.GetSpecialization)
+    local specID
+    if public(spec, "number") then specID = native(C_SpecializationInfo.GetSpecializationInfo, spec) end
+    return {class = class, specID = public(specID, "number") and specID or nil, role = PTG.db.role}
 end
 
 function PTG:GetDungeons()
@@ -98,7 +105,7 @@ function PTG:GetLanguages()
 end
 
 local function readGroup(id)
-    if locked() then return nil end
+    if locked() or not validRole(PTG.db.role) then return nil end
     local info = C.GetSearchResultInfo(id)
     if not info or not public(info, "table") then return nil end
     local fields = {age = "number", numMembers = "number", isDelisted = "boolean",
@@ -122,10 +129,12 @@ local function readGroup(id)
     if not public(meetsScore, "boolean") then return nil end
     local counts = C.GetSearchResultMemberCounts(id)
     if not public(counts, "table") then return nil end
-    local roleCounts = {}
+    local roleCounts, roleRemaining = {}, {}
     for _, role in ipairs({"TANK", "HEALER", "DAMAGER"}) do
         if not public(counts[role], "number") then return nil end
         roleCounts[role] = counts[role]
+        local remaining = counts[role .. "_REMAINING"]
+        if public(remaining, "number") then roleRemaining[role] = remaining end
     end
     local remaining = counts[PTG.db.role .. "_REMAINING"]
     if not public(remaining, "number") then return nil end
@@ -142,12 +151,44 @@ local function readGroup(id)
         dungeon = activity and activity.fullName or "", age = info.age,
         leaderRating = rating, numMembers = info.numMembers, hasSelf = info.hasSelf,
         isDelisted = info.isDelisted, eligible = remaining > 0 and ilvl >= info.requiredItemLevel and meetsScore,
-        roleCounts = roleCounts, members = members, complete = complete}
+        roleCounts = roleCounts, roleRemaining = roleRemaining, members = members, complete = complete}
 end
 
 function API:ReadGroup(id)
     local ok, group = pcall(readGroup, id)
     if ok then return group end
+end
+
+local function isRoleFull(id, identity, role)
+    if locked() or not public(identity, "string") or identity == "" then return nil end
+    local info = C.GetSearchResultInfo(id)
+    if not public(info, "table") then return nil end
+    for field, kind in pairs({ partyGUID = "string", numMembers = "number", isDelisted = "boolean",
+        hasSelf = "boolean", activityIDs = "table" }) do
+        if not public(info[field], kind) then return nil end
+    end
+    if info.partyGUID ~= identity or info.isDelisted or info.hasSelf then return nil end
+    local mythicPlus = false
+    for _, activityID in ipairs(info.activityIDs) do
+        if public(activityID, "number") and PTG.activities and PTG.activities[activityID] then
+            mythicPlus = true
+            break
+        end
+    end
+    if not mythicPlus then return nil end
+    local counts = C.GetSearchResultMemberCounts(id)
+    if not public(counts, "table") then return nil end
+    local roleCounts = {}
+    for _, memberRole in ipairs({ "TANK", "HEALER", "DAMAGER" }) do
+        if not public(counts[memberRole], "number") then return nil end
+        roleCounts[memberRole] = counts[memberRole]
+    end
+    return PTG.Filters.IsRoleFull({ numMembers = info.numMembers, roleCounts = roleCounts }, role)
+end
+
+function API:IsRoleFull(id, identity, role)
+    local ok, full = pcall(isRoleFull, id, identity, role)
+    if ok then return full end
 end
 
 function API:ReadResults()
@@ -192,6 +233,7 @@ function API:ReadApplications()
 end
 
 function API:Search(settings)
+    if not validRole(settings.role) then return false, "no_role" end
     local languages, activities = {}, {}
     for _, language in ipairs(PTG:GetLanguages()) do
         languages[language.id] = language.mandatory or language.selected
@@ -212,6 +254,7 @@ function API:Search(settings)
 end
 
 function API:Apply(id, role)
+    if not validRole(role) then return false, "no_role" end
     if self:Context() then return false end
     local ok, reason = pcall(C.ApplyToGroup, id, role == "TANK", role == "HEALER", role == "DAMAGER")
     if not ok and public(reason, "string") then PTG.engine:Log("native_error", reason) end
@@ -271,6 +314,23 @@ function PTG:SettingsChanged()
     self:BindsLocale()
 end
 
+function PTG:SetRole(role)
+    if not validRole(role) then role = nil end
+    if self.db.role == role then return end
+    self.db.role = role
+    if self.engine then self:SettingsChanged() end
+end
+
+function PTG:SyncRole()
+    if not self.db.autoRole then return end
+    local spec = native(C_SpecializationInfo and C_SpecializationInfo.GetSpecialization)
+    local role
+    if public(spec, "number") then
+        role = native(function() return select(5, C_SpecializationInfo.GetSpecializationInfo(spec)) end)
+    end
+    self:SetRole(role)
+end
+
 function PTG:GetView()
     local engine = self.engine
     local apps = {}
@@ -283,7 +343,8 @@ function PTG:GetView()
         stateArgs = engine.state == "native_pause" and {self.nativeReason} or engine.stateArgs,
         found = engine.found, eligible = engine.eligible, active = engine.active, limit = engine.limit,
         lastResponse = engine.lastResponse and math.max(0, GetTime() - engine.lastResponse),
-        nextCandidate = engine.nextCandidate, applications = apps, searchText = query()}
+        nextCandidate = engine.nextCandidate, applications = apps, searchText = query(),
+        groupFinderVisible = LFGListFrame and LFGListFrame:IsVisible() or false}
 end
 
 function PTG:OpenSearch()
@@ -312,7 +373,7 @@ end
 
 function PTG:PrintLog()
     local view = self:GetView()
-    print("PressToGroup 0.1.4: " .. self:L(view.state, unpack(view.stateArgs or {})))
+    print("PressToGroup 0.1.15: " .. self:L(view.state, unpack(view.stateArgs or {})))
     for _, entry in ipairs(self.engine.log) do
         print(string.format("[%0.1f] %s", entry.at, self:L(entry.key, unpack(entry.args))))
     end
@@ -323,10 +384,11 @@ local function initialize()
     PTG.db = PressToGroupDB
     local db = PTG.db
     db.locale = (db.locale == "ruRU" or db.locale == "enUS") and db.locale or "auto"
-    local spec = C_SpecializationInfo.GetSpecialization()
-    db.role = db.role or (spec and select(5, C_SpecializationInfo.GetSpecializationInfo(spec))) or "DAMAGER"
-    if db.role ~= "TANK" and db.role ~= "HEALER" and db.role ~= "DAMAGER" then db.role = "DAMAGER" end
+    db.compactMode = db.compactMode == true
+    db.autoRole = db.autoRole ~= false
+    if db.autoRole then PTG:SyncRole() else PTG:SetRole(db.role) end
     db.minRating = math.max(0, tonumber(db.minRating) or 0)
+    db.replaceAfter = PTG.Engine.ParseReplacementAge(db.replaceAfter) or 180
     db.dungeons = type(db.dungeons) == "table" and db.dungeons or {}
     if type(db.languages) ~= "table" then
         db.languages = native(C.GetLanguageSearchFilter) or {}
@@ -363,9 +425,15 @@ local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:SetScript("OnEvent", function(_, event, name)
     if event == "ADDON_LOADED" then
-        if name ~= addonName or PTG.engine then return end
+        if name ~= addonName then
+            if PTG.engine and (name == "Blizzard_GroupFinder" or name == "PremadeGroupsFilter") then
+                PTG:BuildGroupFinderButton()
+            end
+            return
+        end
+        if PTG.engine then return end
         initialize()
-        for _, value in ipairs({"PLAYER_ENTERING_WORLD", "GROUP_ROSTER_UPDATE", "LFG_LIST_SEARCH_RESULTS_RECEIVED",
+        for _, value in ipairs({"PLAYER_ENTERING_WORLD", "PLAYER_SPECIALIZATION_CHANGED", "GROUP_ROSTER_UPDATE", "LFG_LIST_SEARCH_RESULTS_RECEIVED",
             "LFG_LIST_SEARCH_FAILED", "LFG_LIST_SEARCH_RESULT_UPDATED", "LFG_LIST_APPLICATION_STATUS_UPDATED",
             "LFG_LIST_AVAILABILITY_UPDATE"}) do
             events:RegisterEvent(value)
@@ -373,6 +441,9 @@ events:SetScript("OnEvent", function(_, event, name)
         return
     end
     local ok, reason = pcall(function()
+        if event == "PLAYER_ENTERING_WORLD" or (event == "PLAYER_SPECIALIZATION_CHANGED" and public(name, "string") and name == "player") then
+            PTG:SyncRole()
+        end
         if event == "LFG_LIST_SEARCH_RESULTS_RECEIVED" then PTG.engine:SearchReceived()
         elseif event == "LFG_LIST_SEARCH_FAILED" then PTG.engine:SearchFailed(public(name, "string") and name or nil)
         elseif event == "PLAYER_ENTERING_WORLD" or event == "LFG_LIST_AVAILABILITY_UPDATE" then
@@ -390,7 +461,10 @@ events:SetScript("OnUpdate", function(_, dt)
     elapsed = elapsed + dt
     if elapsed < 0.5 then return end
     elapsed = 0
-    local ok, reason = pcall(PTG.engine.Plan, PTG.engine)
+    local ok, reason = pcall(function()
+        if PTG.db.autoRole and PTG.db.role == nil then PTG:SyncRole() end
+        PTG.engine:Plan()
+    end)
     if not ok then reportError(reason) end
     PTG:RefreshUI()
 end)
