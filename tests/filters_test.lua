@@ -33,6 +33,11 @@ local function roleFull(snapshot, role, expected)
     checks = checks + 1
 end
 
+local function partyFull(snapshot, size, expected)
+    assert(F.IsPartyFull(snapshot, size) == expected, "actual total capacity for company " .. tostring(size))
+    checks = checks + 1
+end
+
 roleFull(group(), "HEALER", false)
 roleFull(group(), "TANK", true)
 roleFull(group(), "DAMAGER", false)
@@ -60,6 +65,33 @@ for role, value in pairs({TANK = 2, HEALER = 2, DAMAGER = 4}) do
 end
 roleFull({numMembers = 3}, "HEALER", nil)
 roleFull({numMembers = 4, roleCounts = group().roleCounts}, "HEALER", nil)
+
+partyFull(group(), 2, false)
+partyFull(group(), 3, true)
+partyFull(group(), 4, true)
+partyFull({numMembers = 1, roleCounts = {TANK = 1, HEALER = 0, DAMAGER = 0}}, 4, false)
+partyFull({numMembers = 2, roleCounts = {TANK = 0, HEALER = 1, DAMAGER = 1}}, 3, false)
+partyFull({numMembers = 4, roleCounts = {TANK = 1, HEALER = 1, DAMAGER = 2}}, 2, true)
+partyFull(composition, 2, true)
+partyFull(nil, 2, nil)
+partyFull({}, 2, nil)
+partyFull({numMembers = 4, roleCounts = group().roleCounts}, 2, nil)
+partyFull({numMembers = 3, roleCounts = {TANK = 2, HEALER = 0, DAMAGER = 1}}, 2, nil)
+for _, value in ipairs({0, 1, 5, -1, 2.5, math.huge, 0 / 0, "2", false, {}}) do
+    partyFull(group(), value, nil)
+end
+partyFull(group(), nil, nil)
+for _, value in ipairs({0, 6, -1, 2.5, math.huge, 0 / 0, "3"}) do
+    partyFull({numMembers = value, roleCounts = group().roleCounts}, 2, nil)
+end
+for _, role in ipairs({"TANK", "HEALER", "DAMAGER"}) do
+    for _, invalid in ipairs({{value = nil}, {value = -1}, {value = 0.5}, {value = math.huge},
+        {value = 0 / 0}, {value = "0"}, {value = 4}}) do
+        local invalidGroup = group()
+        invalidGroup.roleCounts[role] = invalid.value
+        partyFull(invalidGroup, 2, nil)
+    end
+end
 
 eligible(group(), {}, true)
 eligible(group(), { role = "HEALER", minRating = 3000, dungeons = { [100] = true },
@@ -224,6 +256,136 @@ snapshot = plainGroup({TANK = 0, HEALER = 0, DAMAGER = 3}, {TANK = 1, HEALER = 1
 eligible(snapshot, {requireLust = true, requireBrez = true}, true, nil, {role = "HEALER", class = "SHAMAN", specID = 264})
 snapshot.members[1] = {class = "MAGE", role = "DAMAGER"}
 eligible(snapshot, {requireLust = true, requireBrez = true}, true)
+
+local function companyPlayer(roles, classes)
+    local role = roles.HEALER > 0 and "HEALER" or roles.TANK > 0 and "TANK" or "DAMAGER"
+    local result = {role = role, class = role == "TANK" and "WARRIOR" or role == "HEALER" and "PRIEST" or "ROGUE",
+        company = {size = 0, roles = roles, members = {}}}
+    for _, role in ipairs({"TANK", "HEALER", "DAMAGER"}) do
+        for _ = 1, roles[role] do
+            local index = #result.company.members + 1
+            result.company.members[index] = {class = classes and classes[index]
+                or role == "TANK" and "WARRIOR" or role == "HEALER" and "PRIEST" or "ROGUE"}
+            result.company.size = result.company.size + 1
+        end
+    end
+    return result
+end
+
+local duo = companyPlayer({TANK = 0, HEALER = 1, DAMAGER = 1})
+local trio = companyPlayer({TANK = 0, HEALER = 1, DAMAGER = 2})
+local quartet = companyPlayer({TANK = 1, HEALER = 1, DAMAGER = 2}, {"WARRIOR", "PRIEST", "MAGE", "WARLOCK"})
+snapshot = plainGroup({TANK = 1, HEALER = 0, DAMAGER = 1}, {TANK = 0, HEALER = 1, DAMAGER = 2})
+eligible(snapshot, {}, true, nil, duo)
+eligible(snapshot, {}, true, nil, trio)
+eligible(snapshot, {}, false, "full", quartet)
+snapshot.roleRemaining.DAMAGER = 1
+eligible(snapshot, {}, true, nil, duo)
+eligible(snapshot, {}, false, "role_full", trio)
+snapshot.roleRemaining.DAMAGER = nil
+eligible(snapshot, {}, false, "unknown_group", trio)
+snapshot.roleRemaining.DAMAGER = 3
+eligible(snapshot, {}, false, "unknown_group", trio)
+snapshot.roleRemaining = nil
+eligible(snapshot, {}, false, "unknown_group", duo)
+
+snapshot = plainGroup({TANK = 1, HEALER = 0, DAMAGER = 0}, {TANK = 0, HEALER = 1, DAMAGER = 3})
+eligible(snapshot, {}, true, nil, duo)
+eligible(snapshot, {}, true, nil, trio)
+eligible(snapshot, {}, false, "role_full", quartet)
+snapshot.roleCounts.TANK, snapshot.roleCounts.HEALER = 0, 1
+eligible(snapshot, {}, false, "role_full", duo)
+snapshot.roleCounts.HEALER = nil
+eligible(snapshot, {}, false, "unknown_group", duo)
+snapshot = plainGroup({TANK = 0, HEALER = 0, DAMAGER = 1}, {TANK = 1, HEALER = 1, DAMAGER = 2})
+eligible(snapshot, {requireTank = true}, false, "no_tank", duo)
+eligible(snapshot, {requireTank = true}, true, nil, quartet)
+eligible(snapshot, {requireLust = true, requireBrez = true}, true, nil, quartet)
+snapshot.members, snapshot.complete = nil, false
+eligible(snapshot, {requireLust = true, requireBrez = true}, true, nil, quartet)
+local unknownCompanion = companyPlayer({TANK = 1, HEALER = 1, DAMAGER = 2})
+unknownCompanion.company.members[4] = {}
+eligible(snapshot, {}, true, nil, unknownCompanion)
+eligible(snapshot, {requireLust = true}, false, "unknown_members", unknownCompanion)
+
+snapshot = plainGroup({TANK = 1, HEALER = 0, DAMAGER = 0}, {TANK = 0, HEALER = 1, DAMAGER = 3})
+eligible(snapshot, {requireLust = true, requireBrez = true}, true, nil, duo)
+snapshot.roleRemaining.TANK = nil
+eligible(snapshot, {requireLust = true, requireBrez = true}, true, nil, duo)
+snapshot.roleRemaining.DAMAGER = 2
+eligible(snapshot, {requireLust = true, requireBrez = true}, false, "unknown_group", duo)
+snapshot.roleRemaining.TANK = 0
+eligible(snapshot, {requireLust = true, requireBrez = true}, false, "no_brez", duo)
+eligible(snapshot, {requireLust = true}, true, nil, duo)
+eligible(snapshot, {requireBrez = true}, true, nil, duo)
+snapshot.roleRemaining.DAMAGER = 1
+eligible(snapshot, {requireLust = true}, false, "no_lust", duo)
+eligible(snapshot, {requireBrez = true}, false, "no_brez", duo)
+
+local tankHealer = companyPlayer({TANK = 1, HEALER = 1, DAMAGER = 0})
+local tankDamage = companyPlayer({TANK = 1, HEALER = 0, DAMAGER = 1})
+for _, case in ipairs({{who = tankHealer, counts = {TANK = 0, HEALER = 0, DAMAGER = 1},
+    remaining = {TANK = 1, HEALER = 1, DAMAGER = 2}},
+    {who = tankDamage, counts = {TANK = 0, HEALER = 1, DAMAGER = 0},
+    remaining = {TANK = 1, HEALER = 0, DAMAGER = 3}}}) do
+    snapshot = plainGroup(case.counts, case.remaining)
+    eligible(snapshot, {requireTank = true, requireLust = true, requireBrez = true}, true, nil, case.who)
+    snapshot.roleRemaining.DAMAGER = snapshot.roleRemaining.DAMAGER - 1
+    eligible(snapshot, {requireLust = true, requireBrez = true}, false, "no_brez", case.who)
+end
+
+snapshot = plainGroup({TANK = 0, HEALER = 0, DAMAGER = 2}, {TANK = 1, HEALER = 1, DAMAGER = 1})
+eligible(snapshot, {requireLust = true}, false, "no_lust", duo)
+eligible(snapshot, {requireBrez = true}, true, nil, duo)
+snapshot = plainGroup({TANK = 1, HEALER = 0, DAMAGER = 2}, {TANK = 0, HEALER = 1, DAMAGER = 1})
+eligible(snapshot, {requireLust = true, requireBrez = true}, false, "no_lust", duo)
+local lustDuo = companyPlayer({TANK = 0, HEALER = 1, DAMAGER = 1}, {"PRIEST", "HUNTER"})
+eligible(snapshot, {requireLust = true}, true, nil, lustDuo)
+eligible(snapshot, {requireLust = true, requireBrez = true}, false, "no_brez", lustDuo)
+snapshot.members[3].class = "WARLOCK"
+eligible(snapshot, {requireLust = true, requireBrez = true}, true, nil, lustDuo)
+snapshot.members[3].class = "MAGE"
+local brezDuo = companyPlayer({TANK = 0, HEALER = 1, DAMAGER = 1}, {"PRIEST", "WARLOCK"})
+eligible(snapshot, {requireLust = true, requireBrez = true}, true, nil, brezDuo)
+
+snapshot = plainGroup({TANK = 1, HEALER = 0, DAMAGER = 1}, {TANK = 0, HEALER = 1, DAMAGER = 2})
+local unknownDuo = companyPlayer({TANK = 0, HEALER = 1, DAMAGER = 1})
+unknownDuo.company.members[2] = {}
+eligible(snapshot, {requireLust = true}, true, nil, unknownDuo)
+eligible(snapshot, {requireLust = true, requireBrez = true}, false, "unknown_members", unknownDuo)
+unknownDuo.company.members = nil
+eligible(snapshot, {}, true, nil, unknownDuo)
+eligible(snapshot, {requireBrez = true}, true, nil, unknownDuo)
+snapshot.roleRemaining.DAMAGER = 1
+eligible(snapshot, {requireBrez = true}, false, "unknown_members", unknownDuo)
+
+for _, invalid in ipairs({{value = nil}, {value = "1"}, {value = false}, {value = {}},
+    {value = -1}, {value = 0.5}, {value = math.huge}, {value = 0 / 0}, {value = 4}}) do
+    for _, role in ipairs({"TANK", "HEALER", "DAMAGER"}) do
+        local who = companyPlayer({TANK = 0, HEALER = 1, DAMAGER = 1})
+        who.company.roles[role] = invalid.value
+        eligible(group(), {}, false, "unknown_group", who)
+    end
+end
+for _, invalid in ipairs({{value = nil}, {value = "2"}, {value = false}, {value = {}},
+    {value = -1}, {value = 0}, {value = 1.5}, {value = math.huge}, {value = 0 / 0}, {value = 5}}) do
+    local who = companyPlayer({TANK = 0, HEALER = 1, DAMAGER = 1})
+    who.company.size = invalid.value
+    eligible(group(), {}, false, "unknown_group", who)
+end
+local invalidDuo = companyPlayer({TANK = 0, HEALER = 1, DAMAGER = 1})
+invalidDuo.company.size = 3
+eligible(group(), {}, false, "unknown_group", invalidDuo)
+invalidDuo.company.size, invalidDuo.company.roles = 2, nil
+eligible(group(), {}, false, "unknown_group", invalidDuo)
+for _, invalid in ipairs({"unknown", false, 2}) do
+    eligible(group(), {}, false, "unknown_group", {role = "HEALER", company = invalid})
+end
+local soloCompany = {role = "HEALER", class = "SHAMAN", company = {size = 1}}
+snapshot = group()
+snapshot.roleRemaining, snapshot.members, snapshot.complete = nil, nil, false
+eligible(snapshot, {requireLust = true}, true, nil, soloCompany)
+eligible(snapshot, {}, true, nil, soloCompany)
 
 for _, field in ipairs({ "id", "identity", "activityID", "age", "leaderRating", "numMembers",
     "isDelisted", "hasSelf", "eligible", "roleCounts" }) do

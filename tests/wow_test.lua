@@ -8,13 +8,42 @@ end
 local now, grouped, combat, chatLocked, queueMessage = 100, false, false, false, nil
 local specIndex, specID, specRole = 2, 257, "HEALER"
 local calls, apps, results, frames = {}, {}, {}, {}
+local keyboardFocus, keyPrefix = nil, ""
+local physicalKeys, movementBindings = {}, {}
+local party, instanceGrouped, raidGrouped, roleCheck, applying = nil, false, false, false, false
+local partyItemLevel = 180
 local source = arg and arg[0] and arg[0]:gsub("\\", "/") or "tests/wow_test.lua"
 local root = source:match("^(.*)/tests/[^/]+$") or "."
 GetTime = function() return now end
 GetLocale = function() return "ruRU" end
-IsInGroup = function() return grouped end
+LE_PARTY_CATEGORY_HOME, LE_PARTY_CATEGORY_INSTANCE = 1, 2
+IsInGroup = function(category)
+    if category == LE_PARTY_CATEGORY_INSTANCE then return instanceGrouped end
+    return grouped or party ~= nil or (category == nil and instanceGrouped)
+end
+IsInRaid = function() return raidGrouped end
+GetNumGroupMembers = function() return party and #party + 1 or (grouped and 5 or 0) end
+local function partyMember(unit)
+    return party and (unit == "player" and party.player or party[tonumber(unit:match("party(%d+)"))])
+end
+UnitGUID = function(unit)
+    local member = partyMember(unit)
+    return unit == "player" and "Player-Local" or member and member.guid
+end
+UnitIsGroupLeader = function(unit, category)
+    assert(category == LE_PARTY_CATEGORY_HOME)
+    return (party and party.leader or "Player-Local") == UnitGUID(unit)
+end
+UnitIsConnected = function(unit)
+    local member = partyMember(unit)
+    return not member or member.connected ~= false
+end
+UnitGroupRolesAssigned = function(unit) local member = partyMember(unit); return member and member.role or "NONE" end
 InCombatLockdown = function() return combat end
-UnitClass = function() return "Жрец", "PRIEST" end
+GetCurrentKeyBoardFocus = function() return keyboardFocus end
+GetBindingFromInput = function(key) return movementBindings[keyPrefix .. key] or "" end
+IsKeyDown = function(key) return physicalKeys[key] == true end
+UnitClass = function(unit) local member = partyMember(unit); return "Класс", member and member.class or "PRIEST" end
 GetAverageItemLevel = function() return 180, 175 end
 C_SpecializationInfo = {
     GetSpecialization = function() return specIndex end,
@@ -26,7 +55,13 @@ C_SpecializationInfo = {
 GetSpecialization, GetSpecializationInfo, GetSpecializationRole = nil, nil, nil
 issecretvalue = function(value) return value == "SECRET" end
 bit = {bor = function(a, b) return a + b end}
-Enum = {LFGListFilter = {CurrentSeason = 1, PvE = 2}}
+Enum = {LFGListFilter = {CurrentSeason = 1, PvE = 2}, AvgItemLevelCategories = {Base = 0}}
+C_PartyInfo = {GetMinItemLevel = function(category) assert(category == 0); return partyItemLevel end}
+C_PlayerInfo = {GetPlayerMythicPlusRatingSummary = function(unit)
+    local member = partyMember(unit)
+    if member and member.score == false then return nil end
+    return {currentSeasonScore = member and member.score or 3654}
+end}
 MAX_LFG_LIST_APPLICATIONS = 5
 C_ChatInfo = {InChatMessagingLockdown = function() return chatLocked end}
 SOUNDKIT = {READY_CHECK = 8960}
@@ -43,10 +78,12 @@ PVEFrame_ShowFrame = function() LFGListFrame.shown, LFGListFrame.parentVisible =
 LFGListFrame_SetActivePanel = function() calls[#calls + 1] = {kind = "open"} end
 LFGListCategorySelection_SelectCategory = function() error("should preserve the current category") end
 LFGListCategorySelection_StartFindGroup = function() error("must not clear the query") end
-CreateFrame = function()
-    local frame = {scripts = {}, events = {}}
+CreateFrame = function(kind, name, parent, template)
+    local frame = {scripts = {}, events = {}, parent = parent, name = name,
+        propagateKeyboardInput = template == "InsecureKeyboardInputPropagatorTemplate"}
     function frame:RegisterEvent(event) self.events[event] = true end
     function frame:SetScript(key, callback) self.scripts[key] = callback end
+    function frame:EnableKeyboard(enabled) self.keyboardEnabled = enabled end
     frames[#frames + 1] = frame
     return frame
 end
@@ -76,6 +113,8 @@ C_LFGList = {
     GetLanguageSearchFilter = function() return {ruRU = true} end,
     GetAvailableRoles = function() return false, true, true end,
     GetActiveEntryInfo = function() return nil end,
+    IsCurrentlyApplying = function() return applying end,
+    GetRoleCheckInfo = function() return roleCheck, 101 end,
     GetApplications = function()
         local ids = {}
         for id, app in pairs(apps) do if app.status ~= "none" or app.pending then ids[#ids + 1] = id end end
@@ -696,4 +735,345 @@ for _, compact in ipairs({true, false}) do
     check(PTG.db.compactMode == compact and PTG.db.position.point == "TOPLEFT",
         "the chosen window mode survives another addon session")
 end
+
+-- Exercise real adapter dispatch as well as the input edge policy.
+local function inputSession(mode)
+    calls, apps, results, physicalKeys = {}, {}, {}, {}
+    keyboardFocus, keyPrefix = nil, ""
+    grouped, combat, chatLocked, queueMessage = false, false, false, nil
+    party, instanceGrouped, raidGrouped, roleCheck, applying = nil, false, false, false, false
+    LFGListFrame.shown, LFGListFrame.parentVisible = false, true
+    text, now = "+19", now + 100
+    movementBindings = {W = "MOVEFORWARD", S = "MOVEBACKWARD", A = "TURNLEFT", D = "TURNRIGHT",
+        Q = "STRAFELEFT", E = "STRAFERIGHT", SPACE = "JUMP", ["SHIFT-W"] = "ACTIONBUTTON1"}
+    loadSession({inputMode = mode})
+end
+local function movementKey(key, down)
+    physicalKeys[key] = down
+    local frame = PTG.movementInput
+    frame.scripts[down and "OnKeyDown" or "OnKeyUp"](frame, key)
+end
+
+inputSession()
+check(PTG.db.inputMode == "auto" and not PTG.engine.running, "new characters keep automatic input but start stopped")
+check(PTG.movementInput.keyboardEnabled and PTG.movementInput.propagateKeyboardInput,
+    "movement observer uses the native non-consuming keyboard template")
+movementKey("W", true)
+PTG:Start()
+movementKey("W", true)
+check(#calls == 0, "starting while a movement key is held does not turn autorepeat into a new press")
+movementKey("W", false)
+movementKey("W", true)
+check(#calls == 1 and calls[1].kind == "search", "a new movement press sends exactly one native search")
+now = now + 1
+movementKey("W", true)
+update(0.5)
+check(#calls == 1, "held movement, repeated down and timer updates do not send more operations")
+movementKey("W", false)
+results[1] = {activityIDs = {101}, partyGUID = "Movement-Party", age = 15, numMembers = 3,
+    isDelisted = false, hasSelf = false, requiredItemLevel = 170, requiredDungeonScore = 3000,
+    leaderOverallDungeonScore = 3600, name = "+19 movement"}
+emit("LFG_LIST_SEARCH_RESULTS_RECEIVED")
+movementKey("SPACE", true)
+check(#calls == 2 and calls[2].kind == "apply" and calls[2].healer,
+    "a separate jump press can submit the selected role through the normal adapter")
+movementKey("SPACE", false)
+apps[1].status, apps[1].pending = "applied", nil
+emit("LFG_LIST_APPLICATION_STATUS_UPDATED")
+now = now + 1
+results[1].numMembers = 4
+results[1].counts = {TANK = 1, HEALER = 1, DAMAGER = 2}
+movementKey("Q", true)
+check(#calls == 3 and calls[3].kind == "cancel" and calls[3].id == 1,
+    "a separate strafe press uses the existing confirmed-own-application cancellation rules")
+movementKey("Q", false)
+PTG:Stop()
+movementKey("E", true)
+check(#calls == 3, "movement cannot advance a stopped assistant")
+
+for _, mode in ipairs({"key", "auto"}) do
+    inputSession(mode)
+    PTG:Start()
+    local presses = 0
+    PTG.engine.Press = function() presses = presses + 1 end
+    PTG.ui = {shown = false}
+    PTG.db.compactMode = true
+    for _, key in ipairs({"W", "S", "A", "D", "Q", "E", "SPACE"}) do
+        movementKey(key, true)
+        movementKey(key, true)
+        movementKey(key, false)
+    end
+    check(presses == (mode == "auto" and 7 or 0),
+        "movement edges respect the mode independently of hidden and compact windows: " .. mode)
+    local before = presses
+    SecureActionButton_OnClick(action, "LeftButton", true, true, true)
+    check(presses == before + (mode == "auto" and 1 or 0), "the actionbar hook respects input mode: " .. mode)
+    PTG:OnPress()
+    check(presses == before + (mode == "auto" and 2 or 1), "the dedicated XML binding/manual path works in either mode: " .. mode)
+end
+
+inputSession("auto")
+PTG:Start()
+local presses = 0
+PTG.engine.Press = function() presses = presses + 1 end
+movementBindings.W, movementBindings.F6 = "ACTIONBUTTON1", "MOVEFORWARD"
+movementKey("W", true)
+movementKey("W", false)
+movementKey("F6", true)
+movementKey("F6", false)
+check(presses == 1, "movement follows reassigned native actions instead of hard-coded WASD")
+keyPrefix = "SHIFT-"
+movementKey("W", true)
+keyPrefix = ""
+movementKey("W", true)
+movementKey("W", false)
+check(presses == 1, "modifier changes on a held key do not create another physical edge")
+local bindingAPI = GetBindingFromInput
+for _, unavailable in ipairs({"SECRET", "TOGGLEAUTORUN", "", false}) do
+    GetBindingFromInput = function() return unavailable end
+    movementKey("SPACE", true)
+    movementKey("SPACE", false)
+end
+GetBindingFromInput = function() error("binding unavailable") end
+movementKey("SPACE", true)
+movementKey("SPACE", false)
+GetBindingFromInput = bindingAPI
+check(presses == 1, "unknown, secret, autorun and failing binding lookups cannot advance movement steps")
+keyboardFocus = {}
+movementKey("SPACE", true)
+keyboardFocus = nil
+movementKey("SPACE", true)
+movementKey("SPACE", false)
+check(presses == 1, "typing focus blocks movement input even if focus is lost while holding the key")
+keyboardFocus = "SECRET"
+movementKey("SPACE", true)
+movementKey("SPACE", false)
+keyboardFocus = nil
+local focusAPI = GetCurrentKeyBoardFocus
+GetCurrentKeyBoardFocus = function() error("focus unavailable") end
+movementKey("SPACE", true)
+movementKey("SPACE", false)
+GetCurrentKeyBoardFocus = focusAPI
+check(presses == 1, "secret or unavailable keyboard focus fails closed")
+for _, blocker in ipairs({"addon", "quick", "native"}) do
+    PTG.bindingCapture = blocker == "addon" or nil
+    QuickKeybindFrame = blocker == "quick" and {IsShown = function() return true end} or nil
+    KeybindListener = blocker == "native" and {IsListening = function() return true end} or nil
+    movementKey("SPACE", true)
+    movementKey("SPACE", false)
+    PTG:OnPress()
+    SecureActionButton_OnClick(action, "LeftButton", true, true, true)
+    check(presses == 1, "all input paths pause during key assignment: " .. blocker)
+end
+PTG.bindingCapture, QuickKeybindFrame, KeybindListener = nil, nil, nil
+movementKey("F6", true)
+physicalKeys.F6 = false -- Simulate release lost during an OS focus change.
+local beforePrune = presses
+update(0.5)
+check(presses == beforePrune, "recovering a missed key-up never executes an action from a timer")
+movementKey("F6", true)
+movementKey("F6", false)
+check(presses == beforePrune + 1, "a new physical press works after a missed release")
+combat = true
+movementKey("SPACE", true)
+movementKey("SPACE", false)
+check(presses == beforePrune + 2 and PTG.movementInput.propagateKeyboardInput,
+    "combat does not change movement propagation or bypass the normal native permission checks")
+combat = false
+
+inputSession("auto")
+PTG:Start()
+PTG:OnPress()
+local engine, beforeModeCalls = PTG.engine, #calls
+local revision, request = engine.revision, engine.search
+PTG.bindingCapture = true
+function PTG:CancelBindingCapture() self.bindingCapture = nil; self.captureCancelled = true end
+PTG:SetInputMode("key")
+check(PTG.captureCancelled and not PTG.bindingCapture and PTG.db.inputMode == "key"
+    and engine.running and engine.revision == revision and engine.search == request and not request.stale
+    and #calls == beforeModeCalls, "mode changes cancel capture without resetting the outstanding search or sending operations")
+PTG.bindingCapture = true
+emit("PLAYER_REGEN_DISABLED")
+check(not PTG.bindingCapture and engine.search == request and #calls == beforeModeCalls,
+    "entering combat cancels assignment without consuming the pending search")
+emit("UPDATE_BINDINGS")
+emit("PLAYER_REGEN_ENABLED")
+check(engine.revision == revision and engine.search == request and #calls == beforeModeCalls,
+    "binding and combat display refreshes leave engine state unchanged")
+for _, invalid in ipairs({false, true, 1, {}, "unknown", "SECRET"}) do
+    inputSession(invalid)
+    check(PTG.db.inputMode == "auto", "invalid saved input modes migrate to automatic input")
+end
+local keySettings = {inputMode = "key"}
+loadSession(keySettings)
+check(PTG.db.inputMode == "key" and not PTG.engine.running, "key mode survives a new session without starting the assistant")
+
+local function partySession(size, mode)
+    inputSession(mode)
+    partyItemLevel = 180
+    party = {leader = "Player-Local"}
+    for index = 1, size - 1 do
+        party[index] = {guid = "Player-Friend-" .. index, role = "DAMAGER",
+            class = index == 1 and "MAGE" or "WARLOCK", score = 3500}
+    end
+    local damage = 4 - size
+    results[1] = {activityIDs = {101}, partyGUID = "Target-Party", age = 10, numMembers = 5 - size,
+        isDelisted = false, hasSelf = false, requiredItemLevel = 170, requiredDungeonScore = 3000,
+        leaderOverallDungeonScore = 3600, name = "+19 shared",
+        counts = {TANK = 1, HEALER = 0, DAMAGER = damage,
+            TANK_REMAINING = 0, HEALER_REMAINING = 1, DAMAGER_REMAINING = 3 - damage}}
+    PTG:Start()
+end
+local function partyApply()
+    PTG:OnPress()
+    check(calls[#calls].kind == "search", "a party leader searches through the normal engine")
+    emit("LFG_LIST_SEARCH_RESULTS_RECEIVED")
+    now = now + 1
+    PTG:OnPress()
+    check(calls[#calls].kind == "apply" and calls[#calls].healer and not calls[#calls].tank
+        and not calls[#calls].damage, "shared ApplyToGroup still sends only the leader's selected role")
+end
+for size = 2, 4 do
+    partySession(size)
+    check(PTG:GetView().companySize == size and PTG:GetView().companyRoles.DAMAGER == size - 1
+        and PTG:GetView().companyLeader, "the adapter exposes the whole company and its leader")
+    partyApply()
+    local filters = calls[1].args[6]
+    check(not filters.needsTank and not filters.needsHealer and not filters.needsDamage,
+        "native single-role filters cannot hide listings needed by a multi-role company")
+    roleCheck, applying = true, true
+    now = now + 20
+    emit("LFG_ROLE_CHECK_SHOW")
+    check(PTG.engine.running and PTG.engine.pending and PTG.engine.state == "wait_roles"
+        and not PTG.engine.owned["Target-Party"], "native role confirmation can wait beyond ten seconds without granting ownership")
+    local operationCount = #calls
+    PTG:OnPress()
+    check(#calls == operationCount and not PTG.engine.api:Search(PTG.db)
+        and not PTG.engine.api:Apply(1, "HEALER"), "pending native party confirmation blocks further operations")
+    roleCheck = false
+    emit("LFG_ROLE_CHECK_HIDE")
+    now = now + 11
+    update(0.5)
+    check(PTG.engine.running and PTG.engine.pending and not PTG.engine.problem and #calls == operationCount,
+        "an observed role check continues after the local dialog disappears while native applying is active")
+    roleCheck, applying = false, false
+    emit("LFG_ROLE_CHECK_HIDE")
+    check(PTG.engine.pending ~= nil, "hiding a role dialog does not confirm the application")
+    apps[1].status, apps[1].pending = "applied", nil
+    emit("LFG_LIST_APPLICATION_STATUS_UPDATED")
+    check(PTG.engine.owned["Target-Party"].partySize == size and not PTG.engine.pending,
+        "confirmed applications retain the submitting company size")
+    applying, roleCheck = true, true
+    apps[2] = {status = "none", pending = "applied"}
+    local beforeExternalApply = #calls
+    PTG:OnPress()
+    PTG.engine:Cancel(1)
+    check(not PTG.engine.api:Cancel(1) and #calls == beforeExternalApply and not PTG.engine.problem,
+        "an external party application also pauses manual cancellation without causing an operation error")
+    applying, roleCheck, apps[2] = false, false, nil
+end
+
+partySession(3)
+partyApply()
+apps[1].status, apps[1].pending = "applied", nil
+emit("LFG_LIST_APPLICATION_STATUS_UPDATED")
+results[1].counts = {TANK = 1, HEALER = 1, DAMAGER = 0,
+    TANK_REMAINING = 0, HEALER_REMAINING = 0, DAMAGER_REMAINING = 3}
+check(PTG.engine:Plan() ~= "cancel", "shared applications are not cancelled using presumed submitted roles")
+results[1].numMembers, results[1].counts.DAMAGER = 3, 1
+now = now + 1
+PTG:OnPress()
+check(calls[#calls].kind == "cancel", "a separate press cancels when the actual total cannot fit the whole company")
+
+partySession(3)
+local api = PTG.engine.api
+check(api:ReadGroup(1).eligible, "known company item level and every member's score satisfy the listing")
+party[2].score = 2999
+check(not api:ReadGroup(1).eligible, "a low score of any companion rejects the listing")
+party[2].score = false
+check(not api:ReadGroup(1).eligible, "unknown companion score cannot establish eligibility")
+party[2].score, partyItemLevel = 3500, 169
+check(not api:ReadGroup(1).eligible, "native party minimum item level applies to the whole company")
+partyItemLevel = 180
+local minItemLevel = C_PartyInfo.GetMinItemLevel
+C_PartyInfo.GetMinItemLevel = function() error("unknown item level") end
+check(api:ReadGroup(1) == nil, "failed party item-level reads do not permit applying")
+C_PartyInfo.GetMinItemLevel = minItemLevel
+party[1].role = "NONE"
+emit("PLAYER_ROLES_ASSIGNED")
+check(PTG.engine.state == "company_roles_unknown" and api:Company().roles == nil,
+    "unknown assigned companion role pauses without inventing a composition")
+party[1].role = "HEALER"
+emit("PLAYER_ROLES_ASSIGNED")
+check(PTG.engine.state == "company_roles_invalid", "two healers do not fit a standard Mythic+ company")
+party[1].role, party[1].connected = "DAMAGER", false
+emit("GROUP_ROSTER_UPDATE")
+check(PTG.engine.state == "company_offline", "an offline companion pauses party actions")
+
+partySession(3)
+partyApply()
+local scope = PTG.engine.scope
+party[1], party[2] = party[2], party[1]
+emit("GROUP_ROSTER_UPDATE")
+emit("PLAYER_ENTERING_WORLD")
+check(PTG.engine.running and PTG.engine.scope == scope,
+    "party token reordering and zoning with the same members do not stop the assistant")
+party[1].guid = "Player-Replacement"
+emit("GROUP_ROSTER_UPDATE")
+check(not PTG.engine.running and PTG.engine.state == "company_changed", "a same-size membership change stops the assistant")
+apps[1].status, apps[1].pending = "applied", nil
+emit("LFG_LIST_APPLICATION_STATUS_UPDATED")
+check(not PTG.engine.owned["Target-Party"], "late confirmation from the former company does not acquire ownership")
+local beforeRestart = #calls
+PTG:OnPress()
+check(#calls == beforeRestart, "a roster change requires explicit restart")
+PTG:Start()
+party.leader = party[1].guid
+emit("PARTY_LEADER_CHANGED")
+check(not PTG.engine.running and PTG.engine.state == "company_not_leader", "losing leadership stops party operations")
+api = PTG.engine.api
+local deniedCalls = #calls
+check(not api:Search(PTG.db) and not api:Apply(1, "HEALER") and not api:Cancel(1) and #calls == deniedCalls,
+    "native adapters independently reject all operations by a non-leader")
+
+partySession(2)
+PTG:OnPress()
+party[1].role = "TANK"
+emit("PLAYER_ROLES_ASSIGNED")
+check(not PTG.engine.running and PTG.engine.state == "company_changed", "a known companion role change requires restart")
+partySession(2)
+PTG:OnPress()
+local oldRequest, friendGUID = PTG.engine.search, party[1].guid
+party[1].guid = nil
+emit("GROUP_ROSTER_UPDATE")
+check(PTG.engine.running and PTG.engine.state == "company_unknown" and oldRequest.stale,
+    "unknown roster pauses and invalidates the old search without pretending membership changed")
+party[1].guid = friendGUID
+emit("GROUP_ROSTER_UPDATE")
+check(PTG.engine.running, "the same known roster resumes without an invented membership change")
+
+for _, blocker in ipairs({"raid", "instance", "full", "secret"}) do
+    partySession(blocker == "full" and 5 or 2)
+    local oldGuidAPI = UnitGUID
+    if blocker == "raid" then raidGrouped = true
+    elseif blocker == "instance" then instanceGrouped = true
+    elseif blocker == "secret" then UnitGUID = function() return "SECRET" end end
+    emit("GROUP_ROSTER_UPDATE")
+    update(0.5)
+    local blockedCount = #calls
+    PTG:OnPress()
+    check(#calls == blockedCount and PTG.engine.state == ({raid = "company_raid", instance = "company_instance",
+        full = "company_full", secret = "company_unknown"})[blocker], "blocked company contexts stay safe across updates: " .. blocker)
+    UnitGUID = oldGuidAPI
+end
+partySession(2, "key")
+local beforeKeyOnly = #calls
+movementKey("W", true)
+movementKey("W", false)
+SecureActionButton_OnClick(action, "LeftButton", true, true, true)
+check(#calls == beforeKeyOnly, "party support preserves key-only suppression of automatic inputs")
+PTG:OnPress()
+check(calls[#calls].kind == "search", "the explicit step path also searches for a company in key mode")
+emit("LFG_LIST_JOINED_GROUP")
+check(not PTG.engine.running, "native join notification stops actions before a delayed roster update")
 print("wow: " .. checks .. " checks passed")

@@ -74,14 +74,18 @@ local tones = {
     stopped = { 0.66, 0.68, 0.7 }, unknown = { 0.76, 0.76, 0.76 },
 }
 local stateKinds = {
-    ready_search = "ready", ready_apply = "ready", ready_cancel = "ready", ready_cancel_role_full = "ready", filters_changed = "ready",
+    ready_search = "ready", ready_apply = "ready", ready_cancel = "ready", ready_cancel_role_full = "ready",
+    ready_cancel_company_full = "ready", filters_changed = "ready",
     searching = "waiting", waiting_search = "waiting", search_empty = "waiting", full = "waiting",
-    no_candidates = "waiting", wait_apply = "waiting", wait_cancel = "waiting",
+    no_candidates = "waiting", wait_apply = "waiting", wait_cancel = "waiting", wait_roles = "waiting",
     apply_sent = "waiting", cancel_sent = "waiting", invited = "invited",
     off = "stopped", grouped = "stopped", manual_search = "paused", no_query = "paused",
     no_dungeons_selected = "paused", no_role = "paused", chat_lockdown = "paused", native_pause = "paused",
     unavailable = "paused", cooldown = "paused", search_failed = "error", search_timeout = "error",
     search_conflict = "error", operation_unknown = "error", unsupported = "error", error = "error",
+    company_changed = "stopped", company_not_leader = "paused", company_raid = "paused", company_full = "paused",
+    company_instance = "paused", company_unknown = "paused", company_roles_unknown = "paused",
+    company_roles_invalid = "paused", company_offline = "paused",
 }
 
 local function hoverText(widget)
@@ -193,6 +197,88 @@ local function settingsInput(parent)
     return control
 end
 
+local function finishBindingCapture(message)
+    local capture = PTG.bindingCapture
+    if not capture then return end
+    capture.phase, capture.pending = "release", nil
+    if message then PTG.settingsUI.bindingMessage = message end
+    if not next(capture.down) then
+        capture.listener:SetScript("OnKeyDown", nil)
+        capture.listener:SetScript("OnKeyUp", nil)
+        capture.listener:SetScript("OnUpdate", nil)
+        capture.listener:EnableKeyboard(false)
+        capture.listener:Hide()
+        PTG.bindingCapture = nil
+    end
+    PTG:RefreshUI()
+end
+
+function PTG:CancelBindingCapture()
+    finishBindingCapture("binding_cancelled")
+end
+
+local function bindingKeyText(key)
+    return key and GetBindingText(key) or PTG:L("binding_none")
+end
+
+local function beginBindingCapture(settings)
+    if InCombatLockdown() then
+        settings.bindingMessage = "binding_combat"
+        PTG:RefreshUI()
+        return
+    end
+    PTG:CancelBindingCapture()
+    if PTG.bindingCapture then return end
+    local focus = GetCurrentKeyBoardFocus()
+    if focus then focus:ClearFocus() end
+    local listener = settings.bindingListener
+    local capture = { phase = "capture", down = {}, listener = listener }
+    PTG.bindingCapture, settings.bindingMessage = capture, nil
+    listener:SetPropagateKeyboardInput(false)
+    listener:SetScript("OnKeyDown", function(_, input)
+        capture.down[input] = true
+        if input == "ESCAPE" then
+            PTG:CancelBindingCapture()
+        elseif capture.phase == "capture" then
+            local key = GetConvertedKeyOrButton(input)
+            if IsKeyPressIgnoredForBinding(key) then return end
+            key = CreateKeyChordStringUsingMetaKeyState(key)
+            local action, currentSet = PTG.Input.GetStepKeyAction(key)
+            if action == nil then
+                finishBindingCapture(currentSet)
+            elseif action == "" or action == "PRESSTOGROUP_STEP" then
+                local _, reason = PTG.Input.AssignStepKey(key, action, currentSet)
+                finishBindingCapture(reason)
+            else
+                capture.phase = "conflict"
+                capture.pending = { key = key, action = action, currentSet = currentSet }
+                PTG:RefreshUI()
+            end
+        end
+    end)
+    listener:SetScript("OnKeyUp", function(_, key)
+        capture.down[key] = nil
+        if capture.phase == "release" then finishBindingCapture() else PTG:RefreshUI() end
+    end)
+    listener:SetScript("OnUpdate", function()
+        if type(IsKeyDown) ~= "function" then return end
+        local released = false
+        for key in pairs(capture.down) do
+            local ok, down = pcall(IsKeyDown, key)
+            if ok and not (type(issecretvalue) == "function" and issecretvalue(down))
+                and type(down) == "boolean" and not down then
+                capture.down[key], released = nil, true
+            end
+        end
+        if released then
+            if capture.phase == "release" then finishBindingCapture() else PTG:RefreshUI() end
+        end
+    end)
+    listener:Show()
+    listener:EnableKeyboard(true)
+    PTG:RefreshUI()
+end
+
 local function buildSettings()
     local settings = panel("PressToGroupSettings", 440, 620)
     settings:SetPoint("CENTER", UIParent, "CENTER", 450, 0)
@@ -248,6 +334,36 @@ local function buildSettings()
         text:SetTextColor(0.7, 0.7, 0.7)
         return text
     end
+    settings.inputModeLabel = label(roleSection, "GameFontHighlightSmall", 360)
+    settings.inputModeButtons = {}
+    for i, mode in ipairs({ "auto", "key" }) do
+        local choice = settingsChoice(roleSection, function() PTG:SetInputMode(mode) end)
+        choice:SetWidth(174)
+        choice.mode = mode
+        settings.inputModeButtons[i] = choice
+    end
+    settings.inputModeHint = hint(roleSection)
+    settings.bindingPrimary, settings.bindingSecondary = hint(roleSection), hint(roleSection)
+    settings.bindingAssign = actionButton(roleSection, 174, function() beginBindingCapture(settings) end)
+    settings.bindingClear = actionButton(roleSection, 174, function()
+        if PTG.bindingCapture then return end
+        local _, reason = PTG.Input.ClearStepKey()
+        settings.bindingMessage = reason
+        PTG:RefreshUI()
+    end)
+    settings.bindingStatus, settings.bindingScope = hint(roleSection), hint(roleSection)
+    settings.bindingConfirm = actionButton(roleSection, 174, function()
+        local capture = PTG.bindingCapture
+        local pending = capture and capture.pending
+        if not pending or next(capture.down) then return end
+        local _, reason = PTG.Input.AssignStepKey(pending.key, pending.action, pending.currentSet)
+        finishBindingCapture(reason)
+    end, true)
+    settings.bindingCancel = actionButton(roleSection, 174, function() PTG:CancelBindingCapture() end)
+    settings.bindingListener = CreateFrame("Frame", nil, UIParent)
+    settings.bindingListener:SetFrameStrata("FULLSCREEN_DIALOG")
+    settings.bindingListener:EnableKeyboard(false)
+    settings.bindingListener:Hide()
     settings.localeLabel = label(languageSection, "GameFontHighlightSmall", 360)
     settings.localeButtons = {}
     for i, locale in ipairs({ "auto", "ruRU", "enUS" }) do
@@ -371,6 +487,59 @@ local function buildSettings()
         end
 
         begin(roleSection, "settings_role_search")
+        self.inputModeLabel:SetText(PTG:L("input_mode"))
+        place(self.inputModeLabel, 20)
+        for i, choice in ipairs(self.inputModeButtons) do
+            choice:ClearAllPoints()
+            choice:SetPoint("TOPLEFT", section, "TOPLEFT", 12 + (i - 1) * 186, y)
+            choice:SetText(PTG:L("input_mode_" .. choice.mode))
+            choice:SetEnabled(db.inputMode ~= choice.mode)
+            choiceStyle(choice, db.inputMode == choice.mode)
+        end
+        y = y - 42
+        self.inputModeHint:SetText(PTG:L(db.inputMode == "key" and "input_mode_key_hint" or "input_mode_auto_hint"))
+        place(self.inputModeHint, self.inputModeHint:GetStringHeight() + 12)
+        local key1, key2, keyError = PTG.Input.GetStepKeys()
+        self.bindingPrimary:SetText(keyError and PTG:L(keyError) or PTG:L("binding_primary", bindingKeyText(key1)))
+        place(self.bindingPrimary, self.bindingPrimary:GetStringHeight() + 8)
+        self.bindingSecondary:SetText(PTG:L("binding_secondary", bindingKeyText(key2)))
+        place(self.bindingSecondary, self.bindingSecondary:GetStringHeight() + 12)
+        local capture = PTG.bindingCapture
+        local pending = capture and capture.pending
+        local combat = InCombatLockdown()
+        self.bindingAssign:SetText(PTG:L("binding_assign"))
+        self.bindingAssign:SetEnabled(not combat and not capture)
+        self.bindingClear:SetText(PTG:L("binding_clear"))
+        self.bindingClear:SetEnabled(not combat and not capture and key1 ~= nil and not keyError)
+        self.bindingAssign:ClearAllPoints()
+        self.bindingAssign:SetPoint("TOPLEFT", section, "TOPLEFT", 12, y)
+        self.bindingClear:ClearAllPoints()
+        self.bindingClear:SetPoint("TOPLEFT", section, "TOPLEFT", 198, y)
+        y = y - 42
+        local message = self.bindingMessage or (combat and "binding_combat" or "binding_hint")
+        if pending then
+            local actionName = GetBindingName(pending.action)
+            self.bindingStatus:SetText(PTG:L("binding_conflict", bindingKeyText(pending.key), actionName))
+        elseif capture then
+            self.bindingStatus:SetText(PTG:L(capture.phase == "capture" and "binding_capture" or "binding_release"))
+        else
+            self.bindingStatus:SetText(PTG:L(message))
+        end
+        place(self.bindingStatus, self.bindingStatus:GetStringHeight() + 12)
+        self.bindingConfirm:SetShown(pending ~= nil)
+        self.bindingCancel:SetShown(capture ~= nil)
+        self.bindingConfirm:SetEnabled(not combat and pending ~= nil and not next(capture and capture.down or {}))
+        self.bindingConfirm:SetText(PTG:L("binding_replace"))
+        self.bindingCancel:SetText(PTG:L("cancel"))
+        if capture then
+            self.bindingConfirm:ClearAllPoints()
+            self.bindingConfirm:SetPoint("TOPLEFT", section, "TOPLEFT", 12, y)
+            self.bindingCancel:ClearAllPoints()
+            self.bindingCancel:SetPoint("TOPLEFT", section, "TOPLEFT", pending and 198 or 12, y)
+            y = y - 42
+        end
+        self.bindingScope:SetText(PTG:L("binding_scope"))
+        place(self.bindingScope, self.bindingScope:GetStringHeight() + 20)
         self.roleLabel:SetText(PTG:L("role"))
         place(self.roleLabel, 20)
         self.autoRole.text:SetText(PTG:L("auto_role"))
@@ -485,6 +654,7 @@ local function buildSettings()
         content:SetHeight(-top)
     end
     settings:SetScript("OnShow", function() settings:Refresh() end)
+    settings:HookScript("OnHide", function() PTG:CancelBindingCapture() end)
 end
 
 function PTG:BuildGroupFinderButton()
@@ -533,6 +703,7 @@ function PTG:BuildUI()
     local compact = self.db.compactMode == true
     local frame = panel("PressToGroupFrame", compact and compactWidth or fullWidth, compact and compactHeight or fullHeight)
     self.ui = frame
+    frame:HookScript("OnHide", function() PTG:CancelBindingCapture() end)
     tinsert(UISpecialFrames, "PressToGroupFrame")
     frame:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
     frame:SetBackdropColor(0.069, 0.058, 0.047, 0.98)
@@ -710,7 +881,6 @@ function PTG:RefreshUI()
     frame.statusAccent:SetColorTexture(unpack(tones[kind]))
     frame.status:SetText(self:L(view.state or "off", unpack(view.stateArgs or {})))
     frame.compactApplications:SetText(self:L("compact_applications", view.active or 0, view.limit or 5))
-    setHoverText(frame.drag, compact and frame.status:GetText() .. "\n" .. frame.compactApplications:GetText() or nil)
     local values = { view.found or 0, view.eligible or 0, string.format("%d/%d", view.active or 0, view.limit or 5) }
     for i, metric in ipairs(frame.metrics) do
         metric.caption:SetText(self:L(metric.key))
@@ -722,8 +892,23 @@ function PTG:RefreshUI()
         response = self:L("elapsed", math.floor(seconds / 60), seconds % 60)
     end
     frame.response:SetText(self:L("last_response", response))
-    frame.role:SetText(self:L("current_role", self:L(self.db.role or "role_unknown"), self:L(self.db.autoRole and "role_auto" or "role_manual")))
-    setHoverText(frame.statusPanel, frame.role:GetText() .. "\n" .. frame.status:GetText() .. "\n" .. frame.response:GetText())
+    local roleText = self:L("current_role", self:L(self.db.role or "role_unknown"), self:L(self.db.autoRole and "role_auto" or "role_manual"))
+    local roleTooltip, companyTooltip = roleText
+    if view.companySize and view.companySize > 1 then
+        local roles = view.companyRoles
+        local companyText = roles and self:L("company_summary", view.companySize, roles.TANK, roles.HEALER, roles.DAMAGER)
+            or self:L("company_summary_unknown", view.companySize)
+        local leaderKey = view.companyLeader == true and "company_leader"
+            or view.companyLeader == false and "company_other_leader" or "company_leader_unknown"
+        companyTooltip = companyText .. "\n" .. roleText .. "\n" .. self:L(leaderKey) .. "\n" .. self:L("company_help")
+        roleTooltip = companyTooltip
+        frame.role:SetText(companyText)
+    else
+        frame.role:SetText(roleText)
+    end
+    setHoverText(frame.statusPanel, roleTooltip .. "\n" .. frame.status:GetText() .. "\n" .. frame.response:GetText())
+    setHoverText(frame.drag, compact and frame.status:GetText() .. "\n" .. frame.compactApplications:GetText()
+        .. (companyTooltip and "\n" .. companyTooltip or "") or nil)
     frame.search:SetText(view.searchText and view.searchText ~= "" and self:L("search_text", view.searchText) or self:L("search_unset"))
     setHoverText(frame.searchPanel, frame.search:GetText())
     local candidate = view.nextCandidate
@@ -784,6 +969,7 @@ function PTG:RefreshUI()
     end
     frame.toggle:SetText(self:L(view.running and "stop" or "start"))
     frame.step:SetText(self:L("step"))
+    frame.step:SetEnabled(view.running and not self.bindingCapture)
     frame.open:SetText(self:L("open_search"))
     frame.settings:SetText(self:L("settings"))
     setHoverText(frame.close, self:L("hide_window"))

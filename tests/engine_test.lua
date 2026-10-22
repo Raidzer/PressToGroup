@@ -108,6 +108,35 @@ local function manual(api, first, last)
     end
 end
 
+local function partyFixture(size)
+    local e, api = fixture()
+    api.company = {scope = "members:" .. size .. "|leader:player", signature = "HEALER:" .. (size - 1),
+        size = size, roles = {TANK = 0, HEALER = 1, DAMAGER = size - 1}, members = {}}
+    for index = 1, size do
+        api.company.members[index] = {class = index == 1 and "PRIEST" or "ROGUE",
+            role = index == 1 and "HEALER" or "DAMAGER"}
+    end
+    function api:Company() return self.company end
+    function api:Context() return self.companyReason or self.context end
+    function api:Player() return {role = "HEALER", class = "PRIEST", specID = 257, company = self.company} end
+    function api:IsPartyFull(id, identity, partySize)
+        local entry = self:ReadGroup(id)
+        if entry and entry.identity == identity and entry.isDelisted == false and entry.hasSelf == false then
+            return PTG.Filters.IsPartyFull(entry, partySize)
+        end
+    end
+    function api:RoleCheckPending(id)
+        local app = self.apps[id]
+        return self.roleCheck == true and app ~= nil and app.pending == "applied"
+    end
+    for _, entry in ipairs(api.groups) do
+        entry.numMembers = 5 - size
+        entry.roleCounts = {TANK = 1, HEALER = 0, DAMAGER = 4 - size}
+        entry.roleRemaining = {TANK = 0, HEALER = 1, DAMAGER = size - 1}
+    end
+    return e, api
+end
+
 test("replacement age accepts only finite positive whole seconds", function()
     for _, pair in ipairs({{180, 180}, {1, 1}, {1000000000, 1000000000}, {"60", 60}, {" 60.0 ", 60}}) do
         assert(PTG.Engine.ParseReplacementAge(pair[1]) == pair[2], "a valid replacement age is preserved")
@@ -645,6 +674,314 @@ test("remapping during cancellation does not falsely acknowledge a free slot", f
     api.apps[91].status = "cancelled"
     e:Tick()
     assert(not e.pending and e.active == 0 and not e.owned["Party-1"])
+end)
+
+for size = 2, 4 do
+    test("one confirmed application captures the whole company: " .. size, function()
+        local e, api = partyFixture(size)
+        search(e, api)
+        assert(press(e, api).kind == "apply")
+        assert(e.pending.partySize == size and e.pending.scope == api.company.scope)
+        assert(e.active == 0, "sending still awaits the next client reconciliation")
+        confirm(e, api, 1)
+        local own = e.owned["Party-1"]
+        assert(own.partySize == size and own.scope == api.company.scope and e.active == 1,
+            "the whole company consumes one confirmed application")
+    end)
+end
+
+for _, change in ipairs({"membership", "leader"}) do
+    test("a changed " .. change .. " stops and releases prior company ownership", function()
+        local e, api = partyFixture(2)
+        search(e, api)
+        press(e, api)
+        confirm(e, api, 1)
+        api.company.scope = api.company.scope .. ":changed-" .. change
+        if change == "leader" then api.companyReason = "company_not_leader" end
+        local before = #api.calls
+        e:Plan()
+        assert(not e.running and not next(e.owned) and e.active == 1)
+        e:Cancel(1)
+        press(e, api)
+        assert(#api.calls == before, "old company applications remain but cannot be managed by the new one")
+        api.companyReason = nil
+        e:Plan()
+        assert(e.state == "company_changed", "the stopped cause survives planning")
+        e:Start()
+        assert(e.running and press(e, api, 8).kind == "search", "resuming requires an explicit start and fresh search")
+    end)
+end
+
+test("party token reordering and unchanged zone snapshots preserve the company", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    press(e, api)
+    confirm(e, api, 1)
+    local own, revision = e.owned["Party-1"], e.revision
+    api.company.members[1], api.company.members[2] = api.company.members[2], api.company.members[1]
+    e:Plan()
+    e:Plan()
+    assert(e.running and e.revision == revision and e.owned["Party-1"] == own,
+        "scope and effective signature determine identity rather than member table order")
+end)
+
+test("changed group roles stop without changing prior company application ownership", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    press(e, api)
+    confirm(e, api, 1)
+    local own = e.owned["Party-1"]
+    api.company.signature = "TANK:HEALER"
+    e:Plan()
+    assert(not e.running and e.state == "company_changed" and e.owned["Party-1"] == own)
+    local before = #api.calls
+    press(e, api)
+    assert(#api.calls == before)
+    e:Start()
+    assert(e.running and e.owned["Party-1"] == own)
+end)
+
+test("unknown roles pause without inventing a company role change", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    local signature, revision = api.company.signature, e.revision
+    api.company.signature, api.companyReason = nil, "company_roles_unknown"
+    e:Plan()
+    assert(e.running and e.state == "company_roles_unknown" and e.revision == revision + 1 and not e.validAt)
+    e:Plan()
+    assert(e.revision == revision + 1, "one unknown-role interval invalidates only once")
+    api.company.signature, api.companyReason = signature, nil
+    e:Plan()
+    assert(e.running and e.companySignature == signature and not e.validAt)
+    api.company.signature, api.companyReason = nil, "company_roles_unknown"
+    e:Plan()
+    api.company.signature, api.companyReason = "TANK:HEALER", nil
+    e:Plan()
+    assert(not e.running and e.state == "company_changed", "new known roles are compared with the last known roles")
+end)
+
+test("an unknown roster pauses and recovers without changing known membership", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    press(e, api)
+    confirm(e, api, 1)
+    local company, own, scope, revision = api.company, e.owned["Party-1"], e.scope, e.revision
+    api.company, api.companyReason = nil, "company_unknown"
+    local before = #api.calls
+    press(e, api)
+    assert(e.running and not e.scopeKnown and e.scope == scope and e.state == "company_unknown")
+    assert(e.owned["Party-1"] == own and not e.applications[1].owned and #api.calls == before and not e.validAt)
+    e:Cancel(1)
+    assert(#api.calls == before and e.revision == revision + 1,
+        "unknown membership cannot authorize explicit cancellation or repeatedly invalidate")
+    api.company, api.companyReason = company, nil
+    e:Plan()
+    assert(e.running and e.scopeKnown and e.applications[1].owned and e.owned["Party-1"] == own and not e.validAt)
+end)
+
+for _, unknown in ipairs({"roster", "roles"}) do
+    test("an unknown " .. unknown .. " invalidates an outstanding company search", function()
+        local e, api = partyFixture(2)
+        e:Start()
+        assert(press(e, api).kind == "search")
+        local company, signature = api.company, api.company.signature
+        if unknown == "roster" then api.company, api.companyReason = nil, "company_unknown"
+        else api.company.signature, api.companyReason = nil, "company_roles_unknown" end
+        e:Plan()
+        assert(e.search and e.search.stale and e.running)
+        e:SearchReceived()
+        assert(not e.validAt and not e.lastResponse and #e.results == 0)
+        api.company, api.companyReason = company, nil
+        api.company.signature = signature
+        assert(press(e, api, 8).kind == "search" and e.running and not e.validAt,
+            "recovery needs a fresh request rather than old search results")
+    end)
+end
+
+test("late confirmation after membership changes grants no ownership", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    press(e, api)
+    local pending = e.pending
+    api.company.scope = "replacement-company"
+    e:Plan()
+    assert(not e.running and e.pending == pending and not next(e.owned))
+    api.apps[1].status, api.apps[1].pending = "applied", nil
+    e:Plan()
+    assert(not e.pending and not next(e.owned) and not e.applications[1].owned and e.active == 1)
+end)
+
+test("confirmation with unknown scope completes without granting ownership", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    press(e, api)
+    local company = api.company
+    api.company, api.companyReason = nil, "company_unknown"
+    api.apps[1].status, api.apps[1].pending = "applied", nil
+    e:Plan()
+    assert(not e.pending and not next(e.owned) and e.active == 1 and e.running)
+    api.company, api.companyReason = company, nil
+    e:Plan()
+    assert(not next(e.owned) and not e.applications[1].owned, "returning data cannot retroactively claim an application")
+end)
+
+test("returning to a prior membership cannot reclaim its detached pending application", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    press(e, api)
+    local originalScope = api.company.scope
+    api.company.scope = "intermediate-company"
+    e:Plan()
+    assert(e.pending and e.pending.detached)
+    api.company.scope = originalScope
+    e:Start()
+    api.apps[1].status, api.apps[1].pending = "applied", nil
+    e:Plan()
+    assert(not e.pending and not next(e.owned) and not e.applications[1].owned and e.active == 1)
+end)
+
+test("a company role check waits beyond ten seconds and confirmation starts application age", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    press(e, api)
+    api.roleCheck = true
+    local before = #api.calls
+    press(e, api, 30)
+    assert(e.running and e.pending and e.pending.waitingRoles and e.state == "wait_roles")
+    assert(not next(e.owned) and e.active == 1 and #api.calls == before)
+    e:Cancel(1)
+    assert(#api.calls == before, "role check blocks explicit cancellation too")
+    api.roleCheck = false
+    confirm(e, api, 1)
+    assert(e.owned["Party-1"].at == api.now and e.owned["Party-1"].partySize == 2)
+end)
+
+test("ending role check starts a fresh bounded confirmation budget", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    press(e, api)
+    api.roleCheck = true
+    press(e, api, 30)
+    api.roleCheck = false
+    e:Plan()
+    assert(e.pending and not e.pending.waitingRoles and e.pending.at == api.now and e.state == "wait_apply")
+    press(e, api, 9)
+    assert(e.pending and e.running)
+    local before = #api.calls
+    press(e, api, 1)
+    assert(not e.pending and not e.running and e.problem == "operation_unknown" and #api.calls == before)
+end)
+
+for _, status in ipairs({"declined", "timedout"}) do
+    test("a role check ending with " .. status .. " is a definite refusal", function()
+        local e, api = partyFixture(2)
+        search(e, api)
+        press(e, api)
+        api.roleCheck = true
+        press(e, api, 30)
+        api.roleCheck = false
+        api.apps[1].status, api.apps[1].pending = status, nil
+        e:Plan()
+        assert(not e.pending and e.running and not e.problem and not next(e.owned) and e.active == 0)
+    end)
+end
+
+test("company early cancellation uses actual total space and the captured size", function()
+    local e, api = partyFixture(3)
+    search(e, api)
+    press(e, api)
+    confirm(e, api, 1)
+    local entry, before = api:ReadGroup(1), #api.calls
+    entry.roleCounts = {TANK = 0, HEALER = 1, DAMAGER = 1}
+    entry.roleRemaining = {TANK = 0, HEALER = 0, DAMAGER = 0}
+    e:Invalidate()
+    press(e, api)
+    assert(#api.calls == before, "filled predicted roles and reservations cannot cancel a company application")
+    entry.numMembers, entry.roleCounts.DAMAGER = 3, 2
+    assert(press(e, api).kind == "cancel" and e.pending and e.active == 1)
+    assert(e.log[#e.log - 1].key == "cancel_company_full")
+    assert(api.now - e.owned["Party-1"].at < 180, "total-space cancellation does not wait for age or a candidate")
+    api.apps[1].status, api.apps[1].pending = "cancelled", nil
+    e:Plan()
+    assert(not e.pending and e.active == 0 and not e.owned["Party-1"] and e.blocked["Party-1"])
+end)
+
+test("unknown or mismatched target composition cannot cancel a company application", function()
+    local e, api = partyFixture(3)
+    search(e, api)
+    press(e, api)
+    confirm(e, api, 1)
+    e:Invalidate()
+    local entry, before = api:ReadGroup(1), #api.calls
+    entry.numMembers = 4
+    press(e, api)
+    assert(#api.calls == before, "inconsistent actual counts are unknown")
+    entry.roleCounts = {TANK = 1, HEALER = 1, DAMAGER = 2}
+    entry.identity = "Reused-Result-ID"
+    press(e, api)
+    assert(#api.calls == before, "the same result ID is not the same target identity")
+    api.groups = {}
+    press(e, api)
+    assert(#api.calls == before and e.owned["Party-1"])
+end)
+
+test("company stop preserves same-scope ownership and explicit cancellation", function()
+    local e, api = partyFixture(2)
+    search(e, api)
+    press(e, api)
+    confirm(e, api, 1)
+    e:Stop()
+    local before = #api.calls
+    press(e, api, 300)
+    assert(#api.calls == before and e.owned["Party-1"])
+    api.context = "no_query"
+    e:Cancel(1)
+    assert(#api.calls == before + 1 and api.calls[#api.calls].kind == "cancel",
+        "explicit cancellation keeps the old behavior when search setup is incomplete")
+end)
+
+for _, reason in ipairs({"company_not_leader", "company_raid", "company_full", "company_instance",
+    "company_unknown", "company_roles_unknown", "company_roles_invalid", "company_offline", "chat_lockdown", "wait_roles"}) do
+    test("company safety pause also blocks explicit cancellation: " .. reason, function()
+        local e, api = partyFixture(2)
+        search(e, api)
+        press(e, api)
+        confirm(e, api, 1)
+        api.companyReason = reason
+        local before = #api.calls
+        e:Cancel(1)
+        assert(#api.calls == before and e.owned["Party-1"])
+    end)
+end
+
+test("manual applications consume the company limit and remain unowned", function()
+    local e, api = partyFixture(2)
+    manual(api, 101, 105)
+    search(e, api)
+    local before = #api.calls
+    press(e, api)
+    assert(e.active == 5 and #api.calls == before and not next(e.owned))
+    e:Cancel(101)
+    assert(#api.calls == before)
+end)
+
+test("company age replacement keeps confirmation and separate presses", function()
+    local e, api = partyFixture(2)
+    e.settings.replaceAfter = 60
+    search(e, api)
+    press(e, api)
+    confirm(e, api, 1)
+    local own = e.owned["Party-1"]
+    api.now = own.at + 60
+    e.validAt = api.now
+    assert(press(e, api).kind == "cancel" and e.pending.kind == "cancel" and e.active == 1)
+    local before = #api.calls
+    press(e, api)
+    assert(#api.calls == before)
+    api.apps[1].status, api.apps[1].pending = "cancelled", nil
+    e:Plan()
+    assert(e.active == 0 and not e.pending and #api.calls == before)
+    assert(press(e, api).kind == "apply" and e.pending.partySize == 2)
 end)
 
 print("engine: " .. passed .. " scenarios passed, " .. failed .. " failed")

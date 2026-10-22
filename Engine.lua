@@ -14,6 +14,10 @@ local function terminal(app)
     return app and not app.pending and statuses[app.status] == true
 end
 
+local COMPANY_PAUSES = {grouped = true, chat_lockdown = true, wait_roles = true, company_not_leader = true,
+    company_raid = true, company_full = true, company_instance = true, company_unknown = true,
+    company_roles_unknown = true, company_roles_invalid = true, company_offline = true}
+
 function Engine.ParseReplacementAge(value)
     if type(value) ~= "number" and type(value) ~= "string" then return nil end
     value = tonumber(value)
@@ -42,15 +46,40 @@ function Engine:Invalidate()
 end
 
 function Engine:Start()
+    self:UpdateCompany()
     self:Invalidate()
     self.running = true
+    self.stopReason = nil
     if not self.conflict then self.problem = nil end
     self:SetState("ready_search")
     self:Log("started")
 end
 
+function Engine:UpdateCompany()
+    local company
+    if self.api.Company then company = self.api:Company()
+    else company = {scope = "solo", signature = "", size = 1} end
+    self.company, self.scopeKnown = company, type(company) == "table" and type(company.scope) == "string" and company.scope ~= ""
+    local unknown = not self.scopeKnown or (type(company.size) == "number" and company.size > 1 and company.signature == nil)
+    if unknown and not self.companyUnknown then self:Invalidate() end
+    self.companyUnknown = unknown
+    if not self.scopeKnown then return end
+    if self.scope and self.scope ~= company.scope then
+        self.owned = {}
+        if self.pending then self.pending.detached = true end
+        self.companySignature = nil
+        if self.running then self:Stop("company_changed") end
+    elseif type(company.size) == "number" and company.size > 1 and company.signature ~= nil and self.companySignature ~= nil
+        and company.signature ~= self.companySignature and self.running then
+        self:Stop("company_changed")
+    end
+    self.scope = company.scope
+    if company.signature ~= nil then self.companySignature = company.signature end
+end
+
 function Engine:Stop(state)
     self.running = false
+    self.stopReason = state == "company_changed" and state or nil
     self:Invalidate()
     self:SetState(state or "off")
     self:Log("stopped")
@@ -126,8 +155,18 @@ function Engine:Reconcile()
     if op then
         local app = seen[op.identity] or self.api:ReadApplication(op.id)
         local same = app and app.identity == op.identity
+        local roleCheck = op.kind == "apply" and self.api.RoleCheckPending
+            and self.api:RoleCheckPending(app and app.id or op.id) == true
+        if roleCheck then
+            op.waitingRoles = true
+        elseif op.waitingRoles then
+            op.waitingRoles, op.at = nil, now
+        end
         if op.kind == "apply" and same and app.status == "applied" and not app.pending then
-            self.owned[op.identity] = {id = app.id, at = now, role = op.role}
+            if self.scopeKnown and not op.detached and op.scope == self.scope then
+                self.owned[op.identity] = {id = app.id, at = now, role = op.role,
+                    scope = op.scope, partySize = op.partySize}
+            end
             self.pending = nil
             self:Log("applied")
         elseif op.kind == "apply" and same and app.status == "invited" then
@@ -138,7 +177,7 @@ function Engine:Reconcile()
             and (same or app.status == "none") then
             self.blocked[op.identity], self.owned[op.identity], self.pending = true, nil, nil
             self:Log("cancelled")
-        elseif now - op.at >= 10 then
+        elseif not roleCheck and now - op.at >= 10 then
             -- A missing acknowledgement never grants ownership or a free slot.
             self.blocked[op.identity], self.pending = true, nil
             self.running, self.problem = false, "operation_unknown"
@@ -151,7 +190,8 @@ function Engine:Reconcile()
     for _, app in ipairs(self.applications) do
         local own = app.identity and self.owned[app.identity]
         if own and active(app) then own.id = app.id end
-        app.owned = own ~= nil and own.id == app.id and app.status == "applied" and not app.pending
+        app.owned = self.scopeKnown and own ~= nil and own.scope == self.scope
+            and own.id == app.id and app.status == "applied" and not app.pending
         app.age = own and math.max(0, now - own.at) or nil
         if own and terminal(app) then self.owned[app.identity] = nil end
         if app.status == "invited" or app.status == "inviteaccepted" then
@@ -177,6 +217,7 @@ function Engine:Tick()
         return
     end
     self.locked = false
+    self:UpdateCompany()
     self:Reconcile()
     local context = self.api:Context()
     if context == "grouped" then
@@ -225,17 +266,28 @@ function Engine:Plan()
     self.nextCandidate = nil
     if self.invited then self:SetState("invited"); return end
     if self.context then self:SetState(self.context); return end
-    if not self.running then self:SetState(self.problem or (self.grouped and "grouped" or "off")); return end
+    if not self.scopeKnown then self:SetState("unavailable"); return end
+    if not self.running then self:SetState(self.problem or self.stopReason or (self.grouped and "grouped" or "off")); return end
     if self.conflict then self:SetState(self.problem or "search_conflict"); return end
     if not self.reliable then self:SetState("operation_unknown"); return end
-    if self.pending then self:SetState(self.pending.kind == "apply" and "wait_apply" or "wait_cancel"); return end
+    if self.pending then
+        self:SetState(self.pending.waitingRoles and "wait_roles" or (self.pending.kind == "apply" and "wait_apply" or "wait_cancel"))
+        return
+    end
     if self.search then self:SetState("searching"); return end
 
     for _, app in ipairs(self.applications) do
         local own = app.identity and self.owned[app.identity]
-        if app.owned and own and own.role and self.api:IsRoleFull(app.id, app.identity, own.role) == true then
-            self:SetState("ready_cancel_role_full")
-            return "cancel", app
+        if app.owned and own then
+            if own.partySize and own.partySize > 1 then
+                if self.api:IsPartyFull(app.id, app.identity, own.partySize) == true then
+                    self:SetState("ready_cancel_company_full")
+                    return "cancel", app
+                end
+            elseif own.role and self.api:IsRoleFull(app.id, app.identity, own.role) == true then
+                self:SetState("ready_cancel_role_full")
+                return "cancel", app
+            end
         end
     end
 
@@ -282,11 +334,13 @@ function Engine:Press()
         if not ok then self:SearchFailed(reason) end
     else
         if self.state == "ready_cancel_role_full" then self:Log("cancel_role_full") end
+        if self.state == "ready_cancel_company_full" then self:Log("cancel_company_full") end
         self.pending = {kind = kind, id = group.id, identity = group.identity, at = now}
         self:SetState(kind == "apply" and "wait_apply" or "wait_cancel")
         self:Log(kind == "apply" and "apply_sent" or "cancel_sent")
         if kind == "apply" then
             self.pending.role = self.settings.role
+            self.pending.scope, self.pending.partySize = self.scope, self.company.size
             ok, reason = self.api:Apply(group.id, self.pending.role)
         else
             ok, reason = self.api:Cancel(group.id)
@@ -301,7 +355,7 @@ end
 
 function Engine:Cancel(id)
     self:Tick()
-    if self.pending or self.invited or self.context == "grouped" or not self.reliable then return end
+    if self.pending or self.invited or COMPANY_PAUSES[self.context] or not self.scopeKnown or not self.reliable then return end
     for _, app in ipairs(self.applications) do
         if app.id == id and app.owned then
             local current = self.api:ReadApplication(id)

@@ -12,6 +12,33 @@ end
 
 GetLocale = function() return "ruRU" end
 IsShiftKeyDown = function() return false end
+local combat, modifiers = false, ""
+local keyboardDown = {}
+IsKeyDown = function(key) return keyboardDown[key] == true end
+InCombatLockdown = function() return combat end
+GetBindingText = function(key) return key end
+GetBindingName = function(action) return "Action: " .. action end
+GetConvertedKeyOrButton = function(key) return key end
+IsKeyPressIgnoredForBinding = function(key)
+    return key == "LCTRL" or key == "RCTRL" or key == "LALT" or key == "RALT" or key == "LSHIFT" or key == "RSHIFT"
+end
+CreateKeyChordStringUsingMetaKeyState = function(key) return modifiers .. key end
+local stepKey1, stepKey2, stepKeyError, bindingAction, bindingSet = "F8", "F9", nil, "", 1
+local assignCalls, clearCalls, bindingFailure = {}, 0, nil
+PTG.Input = {
+    GetStepKeys = function() return stepKey1, stepKey2, stepKeyError end,
+    GetStepKeyAction = function() return bindingAction, bindingSet end,
+    AssignStepKey = function(key, action, currentSet)
+        assignCalls[#assignCalls + 1] = { key = key, action = action, currentSet = currentSet }
+        if bindingFailure then return false, bindingFailure end
+        return true, "binding_saved"
+    end,
+    ClearStepKey = function()
+        clearCalls = clearCalls + 1
+        if bindingFailure then return false, bindingFailure end
+        return true, "binding_cleared"
+    end,
+}
 unpack = unpack or table.unpack
 tinsert = table.insert
 UISpecialFrames = {}
@@ -113,6 +140,7 @@ function Widget:GetCenter() return self:GetLeft() + self:GetWidth() / 2, self:Ge
 function Widget:GetParent() return self.parent end
 function Widget:GetStringHeight() return self.stringHeight or 12 end
 local focusedWidget
+GetCurrentKeyBoardFocus = function() return focusedWidget end
 function Widget:HasFocus() return self == focusedWidget end
 function Widget:SetFocus()
     assert(self.kind == "EditBox", "only edit boxes receive text focus")
@@ -155,6 +183,8 @@ function Widget:SetColorTexture(...) self.color = { ... } end
 function Widget:SetVertexColor(...) self.vertexColor = { ... } end
 function Widget:SetBackdropColor(...) self.background = { ... } end
 function Widget:SetBackdropBorderColor(...) self.border = { ... } end
+function Widget:EnableKeyboard(enabled) self.keyboardEnabled = enabled end
+function Widget:SetPropagateKeyboardInput(propagate) self.propagateKeyboard = propagate end
 for _, method in ipairs({ "SetJustifyH", "SetJustifyV", "SetWidth", "SetFrameStrata",
     "SetBackdrop", "SetClampedToScreen", "SetMovable", "EnableMouse",
     "RegisterForDrag", "StartMoving", "StopMovingOrSizing", "SetAutoFocus", "SetNumeric", "SetMaxLetters",
@@ -210,11 +240,13 @@ for key in pairs(dictionaries.ruRU) do
 end
 for _, key in ipairs({ "filters_changed", "off", "grouped", "chat_lockdown", "unsupported", "manual_search",
     "unavailable", "no_query", "no_role", "no_dungeons_selected", "search_conflict", "search_timeout", "search_failed", "search_empty", "no_candidates",
-    "wait_apply", "wait_cancel", "apply_sent", "cancel_sent" }) do
+    "wait_apply", "wait_cancel", "apply_sent", "cancel_sent", "wait_roles", "ready_cancel_company_full", "cancel_company_full",
+    "company_changed", "company_not_leader", "company_raid", "company_full", "company_instance", "company_unknown",
+    "company_roles_unknown", "company_roles_invalid", "company_offline" }) do
     check(dictionaries.enUS[key] ~= nil, "unlocalized dynamic state: " .. key)
 end
 
-PTG.db = { locale = "auto", role = "HEALER", autoRole = true, compactMode = false, minRating = 3000, replaceAfter = 180,
+PTG.db = { locale = "auto", role = "HEALER", autoRole = true, compactMode = false, inputMode = "auto", minRating = 3000, replaceAfter = 180,
     dungeons = { [101] = true }, languages = { enUS = true } }
 local view = { state = "waiting_search", stateArgs = { 6 }, running = false, found = 9, eligible = 2,
     active = 2, limit = 5, lastResponse = 65, searchText = "12", nextCandidate = {
@@ -234,6 +266,11 @@ function PTG:SetRole(role) self.selectedRole, self.db.role = role, role end
 function PTG:SyncRole()
     self.roleSyncs = (self.roleSyncs or 0) + 1
     if self.db.autoRole then self:SetRole(self.specRole) end
+end
+function PTG:SetInputMode(mode)
+    self:CancelBindingCapture()
+    self.db.inputMode = mode
+    self:RefreshUI()
 end
 PTG.specRole = "HEALER"
 function PTG:OnPress() self.steps = (self.steps or 0) + 1 end
@@ -432,8 +469,10 @@ check(PTG:L("start") == "Start", "unsupported locale falls back to English")
 PTG.db.locale = "ruRU"
 local frame = PTG.ui
 for state, expected in pairs({ ready_search = "ready", ready_apply = "ready", ready_cancel = "ready", ready_cancel_role_full = "ready",
-    searching = "waiting", wait_apply = "waiting", wait_cancel = "waiting", full = "waiting",
+    ready_cancel_company_full = "ready", searching = "waiting", wait_apply = "waiting", wait_cancel = "waiting", wait_roles = "waiting", full = "waiting",
     manual_search = "paused", chat_lockdown = "paused", no_role = "paused", no_dungeons_selected = "paused",
+    company_changed = "stopped", company_not_leader = "paused", company_raid = "paused", company_full = "paused",
+    company_instance = "paused", company_unknown = "paused", company_roles_unknown = "paused", company_roles_invalid = "paused", company_offline = "paused",
     search_timeout = "error", search_conflict = "error", operation_unknown = "error",
     invited = "invited", off = "stopped", future_state = "unknown" }) do
     view.state, view.stateArgs = state, {}
@@ -709,7 +748,9 @@ end
 for _, state in ipairs({"invited", "grouped", "no_role", "no_dungeons_selected", "chat_lockdown", "native_pause",
     "ready_search", "ready_apply", "ready_cancel", "ready_cancel_role_full", "filters_changed", "searching",
     "waiting_search", "search_empty", "full", "no_candidates", "wait_apply", "wait_cancel", "cooldown",
-    "search_failed", "search_timeout", "search_conflict", "operation_unknown", "unsupported", "error", "future_state"}) do
+    "search_failed", "search_timeout", "search_conflict", "operation_unknown", "unsupported", "error", "future_state",
+    "wait_roles", "ready_cancel_company_full", "company_changed", "company_not_leader", "company_raid", "company_full",
+    "company_instance", "company_unknown", "company_roles_unknown", "company_roles_invalid", "company_offline"}) do
     view.state, view.searchText, view.groupFinderVisible, view.running = state, nil, true, false
     PTG:RefreshUI()
     checkGuide(nil, "a blocker or active state takes priority: " .. state)
@@ -914,4 +955,348 @@ PTG:SetCompactMode(true)
 rebuildWindow()
 check(frame:GetLeft() == left and frame:GetTop() == top and frame.width == 300 and frame.height == 72,
     "collapsing and reloading a legacy center position preserves its upper left corner")
+do
+    PTG:SetCompactMode(false)
+    PTG.ui:Show()
+    settings = PTG.settingsUI
+    settings:Show()
+    PTG.db.locale = "ruRU"
+    view.running, view.state, view.nextCandidate = true, "ready_search", nil
+    PTG:RefreshUI()
+    local savedSteps, savedStarts, savedStops, savedChanges, savedCancel =
+        PTG.steps, PTG.started, PTG.stopped, PTG.settingsChanged, PTG.cancelled
+    check(#settings.inputModeButtons == 2 and settings.inputModeButtons[1].selected
+        and not settings.inputModeButtons[1]:IsEnabled(), "input offers two modes with automatic selected")
+    check(settings.bindingPrimary:GetText():find("F8", 1, true)
+        and settings.bindingSecondary:GetText():find("F9", 1, true), "settings show both existing step keys")
+    check(settings.bindingScope:GetText() == PTG:L("binding_scope")
+        and settings.bindingClear:GetText() == PTG:L("binding_clear"), "binding scope and primary-only clearing are explicit")
+    settings.inputModeButtons[2].scripts.OnClick()
+    check(PTG.db.inputMode == "key" and settings.inputModeButtons[2].selected
+        and not settings.inputModeButtons[2]:IsEnabled(), "key mode delegates selection to SetInputMode")
+    check(PTG.ui.status:GetText():find("F8", 1, true)
+        and PTG:L("activation_4"):find("F8", 1, true), "key-mode search and activation hints name the current primary key")
+    stepKey1, stepKey2 = nil, nil
+    PTG:RefreshUI()
+    check(PTG:L("ready_search") == PTG:L("ready_search_key_unbound")
+        and PTG:L("activation_4") == PTG:L("activation_4_key_unbound")
+        and not settings.bindingClear:IsEnabled(), "unassigned key mode explains assignment and preserves the manual alternative")
+    stepKey2 = "F9"
+    PTG:RefreshUI()
+    check(PTG:L("ready_search"):find("F9", 1, true), "a remaining additional key is usable in the mode hint")
+    stepKeyError = "binding_error"
+    PTG:RefreshUI()
+    check(settings.bindingPrimary:GetText() == PTG:L("binding_error")
+        and PTG:L("ready_search") == PTG:L("ready_search_key_unavailable"), "unreadable bindings are not reported as unassigned")
+    stepKey1, stepKey2, stepKeyError = "F8", "F9", nil
+    local function startCapture()
+        settings.bindingAssign.scripts.OnClick()
+        check(PTG.bindingCapture and PTG.bindingCapture.phase == "capture"
+            and settings.bindingListener.keyboardEnabled and settings.bindingListener.propagateKeyboard == false,
+            "explicit assignment enables a swallowing keyboard listener")
+        check(not settings.bindingAssign:IsEnabled() and not settings.bindingClear:IsEnabled()
+            and not PTG.ui.step:IsEnabled(), "binding capture blocks step and binding editing controls")
+    end
+    local function keyDown(key)
+        keyboardDown[key] = true
+        local listener = settings.bindingListener
+        assert(listener.scripts.OnKeyDown, "keyboard listener is active")(listener, key)
+    end
+    local function keyUp(key)
+        keyboardDown[key] = nil
+        local listener = settings.bindingListener
+        assert(listener.scripts.OnKeyUp, "key-release listener is active")(listener, key)
+    end
+    local function stoppedCapture(message)
+        check(not PTG.bindingCapture and not settings.bindingListener.keyboardEnabled
+            and not settings.bindingListener:IsShown() and not settings.bindingListener.scripts.OnKeyDown
+            and not settings.bindingListener.scripts.OnKeyUp and not settings.bindingListener.scripts.OnUpdate, message)
+    end
+    settings.rating:SetFocus()
+    startCapture()
+    check(not settings.rating:HasFocus(), "starting assignment clears current edit focus")
+    local capture = PTG.bindingCapture
+    PTG:RefreshUI()
+    check(PTG.bindingCapture == capture and settings.bindingStatus:GetText() == PTG:L("binding_capture"),
+        "regular refresh preserves the capture session")
+    local callsBefore = #assignCalls
+    keyDown("K")
+    check(#assignCalls == callsBefore + 1 and assignCalls[#assignCalls].key == "K"
+        and assignCalls[#assignCalls].action == "" and assignCalls[#assignCalls].currentSet == 1,
+        "a free key is passed to the binding helper with its observed action and active set")
+    check(PTG.bindingCapture and PTG.bindingCapture.phase == "release"
+        and settings.bindingStatus:GetText() == PTG:L("binding_release"), "successful assignment still consumes the assigning press")
+    keyUp("K")
+    stoppedCapture("release removes keyboard scripts and clears the shared input guard")
+    check(settings.bindingStatus:GetText() == PTG:L("binding_saved"), "assignment success is visible after release")
+    for _, item in ipairs({{"LCTRL", "CTRL-"}, {"LALT", "ALT-"}, {"LSHIFT", "SHIFT-"}}) do
+        startCapture()
+        callsBefore, modifiers = #assignCalls, item[2]
+        keyDown(item[1])
+        check(#assignCalls == callsBefore and PTG.bindingCapture.phase == "capture", "a modifier alone does not complete assignment")
+        keyDown("K")
+        check(assignCalls[#assignCalls].key == item[2] .. "K", "capture uses native chord normalization: " .. item[2])
+        keyUp("K")
+        check(PTG.bindingCapture ~= nil, "assignment remains guarded until the modifier is released")
+        keyUp(item[1])
+        stoppedCapture("modifier release ends capture")
+        modifiers = ""
+    end
+    bindingAction, bindingSet = "ACTIONBUTTON1", 2
+    startCapture()
+    callsBefore = #assignCalls
+    keyDown("X")
+    capture = PTG.bindingCapture
+    check(capture.phase == "conflict" and capture.pending.key == "X" and #assignCalls == callsBefore
+        and settings.bindingStatus:GetText():find("Action: ACTIONBUTTON1", 1, true),
+        "occupied key shows its action before calling any mutation helper")
+    check(not settings.bindingConfirm:IsEnabled(), "conflict confirmation waits for key release")
+    settings.bindingConfirm.scripts.OnClick()
+    check(#assignCalls == callsBefore, "premature confirmation cannot apply a held key")
+    PTG:RefreshUI()
+    check(PTG.bindingCapture == capture and settings.bindingConfirm:IsShown(), "refresh preserves the pending conflict")
+    checkCards("binding conflict")
+    keyUp("X")
+    check(settings.bindingConfirm:IsEnabled(), "released conflict can be confirmed")
+    settings.bindingConfirm.scripts.OnClick()
+    check(#assignCalls == callsBefore + 1 and assignCalls[#assignCalls].key == "X"
+        and assignCalls[#assignCalls].action == "ACTIONBUTTON1" and assignCalls[#assignCalls].currentSet == 2,
+        "confirmation supplies the original conflicting action and binding set for revalidation")
+    stoppedCapture("confirming a released key ends the session")
+    startCapture()
+    keyDown("X")
+    keyUp("X")
+    callsBefore = #assignCalls
+    settings.bindingCancel.scripts.OnClick()
+    stoppedCapture("rejecting the conflict ends capture")
+    check(#assignCalls == callsBefore and settings.bindingStatus:GetText() == PTG:L("binding_cancelled"),
+        "conflict rejection never calls the assignment helper")
+    startCapture()
+    keyDown("X")
+    keyUp("X")
+    bindingAction, bindingSet, bindingFailure = "ACTIONBUTTON2", 1, "binding_changed"
+    settings.bindingConfirm.scripts.OnClick()
+    check(assignCalls[#assignCalls].action == "ACTIONBUTTON1" and assignCalls[#assignCalls].currentSet == 2
+        and settings.bindingStatus:GetText() == PTG:L("binding_changed"), "a stale conflict keeps the original consent snapshot and displays helper refusal")
+    bindingAction, bindingSet, bindingFailure = "", 1, nil
+    for _, reason in ipairs({"binding_error", "binding_restore_failed", "binding_already"}) do
+        bindingFailure = reason
+        startCapture()
+        keyDown("K")
+        keyUp("K")
+        check(settings.bindingStatus:GetText() == PTG:L(reason), "assignment helper result is shown without claiming success: " .. reason)
+    end
+    bindingFailure = nil
+    bindingAction, bindingSet = nil, "binding_error"
+    startCapture()
+    callsBefore = #assignCalls
+    keyDown("K")
+    keyUp("K")
+    check(#assignCalls == callsBefore and settings.bindingStatus:GetText() == PTG:L("binding_error"),
+        "failed conflict lookup cannot mutate a binding")
+    bindingAction, bindingSet = "", 1
+    for _, conflict in ipairs({false, true}) do
+        bindingAction = conflict and "ACTIONBUTTON1" or ""
+        startCapture()
+        if conflict then keyDown("X"); keyUp("X") end
+        callsBefore = #assignCalls
+        keyDown("ESCAPE")
+        check(PTG.bindingCapture and PTG.bindingCapture.phase == "release" and #assignCalls == callsBefore,
+            "Escape cancels capture or conflict while consuming its own press")
+        keyUp("ESCAPE")
+        stoppedCapture("Escape release removes the listener")
+    end
+    bindingAction = ""
+    startCapture()
+    keyDown("LCTRL")
+    PTG:CancelBindingCapture()
+    keyDown("K")
+    callsBefore = #assignCalls
+    keyUp("LCTRL")
+    check(PTG.bindingCapture and #assignCalls == callsBefore, "a key pressed during cancellation remains swallowed until release")
+    keyUp("K")
+    stoppedCapture("all keys released after cancellation clear the guard")
+    for _, window in ipairs({settings, PTG.ui}) do
+        settings:Show()
+        PTG.ui:Show()
+        startCapture()
+        keyDown("LCTRL")
+        window:Hide()
+        check(PTG.bindingCapture and PTG.bindingCapture.phase == "release", "hiding either PTG window cancels the pending assignment")
+        keyUp("LCTRL")
+        stoppedCapture("hidden windows keep release cleanup alive on the separate listener")
+    end
+    settings:Show()
+    PTG.ui:Show()
+    startCapture()
+    keyDown("LCTRL")
+    settings:Hide()
+    keyboardDown.LCTRL = nil
+    settings.bindingListener.scripts.OnUpdate()
+    stoppedCapture("polling recovers a key release lost while a PTG window is hidden")
+    settings:Show()
+    bindingFailure = "binding_error"
+    startCapture()
+    keyDown("K")
+    local nativeIsKeyDown = IsKeyDown
+    local secretState = {}
+    issecretvalue = function(value) return value == secretState end
+    for _, read in ipairs({function() error("unavailable") end, function() return nil end,
+        function() return secretState end}) do
+        IsKeyDown = read
+        settings.bindingListener.scripts.OnUpdate()
+        check(PTG.bindingCapture and PTG.bindingCapture.down.K, "unknown or secret key state cannot release the input guard")
+    end
+    IsKeyDown = nil
+    settings.bindingListener.scripts.OnUpdate()
+    check(PTG.bindingCapture ~= nil, "missing key-state API cannot release the input guard")
+    IsKeyDown, issecretvalue, keyboardDown.K = nativeIsKeyDown, nil, nil
+    settings.bindingListener.scripts.OnUpdate()
+    stoppedCapture("polling recovers a lost release after assignment failure")
+    check(settings.bindingStatus:GetText() == PTG:L("binding_error"), "lost-release recovery preserves the assignment error")
+    bindingFailure, bindingAction = nil, "ACTIONBUTTON1"
+    startCapture()
+    callsBefore = #assignCalls
+    keyDown("X")
+    keyboardDown.X = nil
+    settings.bindingListener.scripts.OnUpdate()
+    check(PTG.bindingCapture and PTG.bindingCapture.phase == "conflict"
+        and settings.bindingConfirm:IsEnabled() and #assignCalls == callsBefore,
+        "polling a released conflict key enables confirmation without accepting or mutating it")
+    PTG:CancelBindingCapture()
+    bindingAction = ""
+    PTG.ui:Show()
+    settings:Show()
+    startCapture()
+    PTG:SetCompactMode(true)
+    stoppedCapture("collapsing the main window cancels key capture")
+    PTG:SetCompactMode(false)
+    settings:Show()
+    startCapture()
+    settings.inputModeButtons[1].scripts.OnClick()
+    stoppedCapture("switching input modes cancels capture")
+    startCapture()
+    keyDown("LCTRL")
+    combat = true
+    PTG:CancelBindingCapture()
+    check(PTG.bindingCapture and PTG.bindingCapture.phase == "release"
+        and not settings.bindingAssign:IsEnabled() and not settings.bindingClear:IsEnabled(),
+        "combat cancels capture and disables editing while consuming a held key")
+    keyUp("LCTRL")
+    stoppedCapture("a held key can finish cancellation in combat")
+    settings.bindingAssign.scripts.OnClick()
+    check(not PTG.bindingCapture and settings.bindingStatus:GetText() == PTG:L("binding_combat"), "assignment cannot start in combat")
+    combat = false
+    PTG:RefreshUI()
+    callsBefore = clearCalls
+    settings.bindingClear.scripts.OnClick()
+    check(clearCalls == callsBefore + 1 and settings.bindingStatus:GetText() == PTG:L("binding_cleared"),
+        "clear primary delegates to the binding helper and displays its result")
+    bindingFailure = "binding_error"
+    settings.bindingClear.scripts.OnClick()
+    check(settings.bindingStatus:GetText() == PTG:L("binding_error"), "clear failure is visible")
+    bindingFailure = nil
+    view.running = false
+    PTG:RefreshUI()
+    check(not PTG.ui.step:IsEnabled(), "Next step is unavailable while the assistant is stopped")
+    for _, locale in ipairs({"ruRU", "enUS"}) do
+        PTG.db.locale = locale
+        settings.inputModeButtons[2].scripts.OnClick()
+        PTG:RefreshUI()
+        check(settings.inputModeButtons[2]:GetText() == PTG:L("input_mode_key")
+            and settings.bindingPrimary:GetText() == PTG:L("binding_primary", "F8"), "mode and key labels follow interface language: " .. locale)
+        settings.inputModeButtons[1].scripts.OnClick()
+        check(PTG:L("ready_search") == dictionaries[locale].ready_search
+            and PTG:L("activation_4") == dictionaries[locale].activation_4, "automatic hints mention abilities, movement and jump: " .. locale)
+    end
+    check(PTG.steps == savedSteps and PTG.started == savedStarts and PTG.stopped == savedStops
+        and PTG.settingsChanged == savedChanges and PTG.cancelled == savedCancel,
+        "mode selection and binding UI never step, start, stop, cancel or invalidate LFG state")
+end
+do
+    local savedSteps, savedStarts, savedStops, savedChanges, savedCancel =
+        PTG.steps, PTG.started, PTG.stopped, PTG.settingsChanged, PTG.cancelled
+    PTG:SetCompactMode(false)
+    frame = PTG.ui
+    frame:Show()
+    PTG.db.role, PTG.db.autoRole = "HEALER", true
+    view.state, view.stateArgs, view.running, view.nextCandidate = "wait_roles", {}, true, nil
+    local groupStates = {
+        wait_roles = "waiting", ready_cancel_company_full = "ready", company_changed = "stopped",
+        company_not_leader = "paused", company_raid = "paused", company_full = "paused", company_instance = "paused",
+        company_unknown = "paused", company_roles_unknown = "paused", company_roles_invalid = "paused", company_offline = "paused",
+    }
+    for _, locale in ipairs({"ruRU", "enUS"}) do
+        PTG.db.locale = locale
+        for size = 2, 5 do
+            view.companySize, view.companyLeader = size, true
+            view.companyRoles = {TANK = size >= 4 and 1 or 0, HEALER = 1, DAMAGER = size >= 4 and size - 2 or size - 1}
+            PTG:RefreshUI()
+            local expected = PTG:L("company_summary", size, view.companyRoles.TANK, 1, view.companyRoles.DAMAGER)
+            check(frame.role:GetText() == expected, "party size and every known role count fit the existing indicator: " .. locale .. " / " .. size)
+            check(frame.width == 440 and frame.height == 620 and frame.role.width == 196,
+                "party summary preserves the full-window and role-indicator dimensions")
+        end
+        frame.statusPanel.scripts.OnEnter(frame.statusPanel)
+        check(GameTooltip:GetText():find(PTG:L("current_role", PTG:L("HEALER"), PTG:L("role_auto")), 1, true)
+            and GameTooltip:GetText():find(PTG:L("company_leader"), 1, true)
+            and GameTooltip:GetText():find(PTG:L("company_help"), 1, true),
+            "party tooltip keeps the local role, leader context and manual native confirmation instructions: " .. locale)
+        view.companyLeader = false
+        PTG:RefreshUI()
+        check(GameTooltip:GetText():find(PTG:L("company_other_leader"), 1, true), "hovered party tooltip updates leader context")
+        view.companyLeader, view.companyRoles = nil, nil
+        PTG:RefreshUI()
+        check(frame.role:GetText() == PTG:L("company_summary_unknown", 5)
+            and GameTooltip:GetText():find(PTG:L("company_leader_unknown"), 1, true),
+            "known party size does not fabricate unknown role counts or leadership")
+        frame.statusPanel.scripts.OnLeave()
+        for state, kind in pairs(groupStates) do
+            view.state = state
+            PTG:RefreshUI()
+            check(frame.statusHeading:GetText() == PTG:L("status_" .. kind)
+                and frame.status:GetText() == PTG:L(state) and not frame.activation:IsShown(),
+                "party state keeps its localized reason and category ahead of activation hints: " .. state .. " / " .. locale)
+        end
+        settings = PTG.settingsUI
+        settings:Show()
+        check(settings.compositionHint:GetText() == PTG:L("composition_hint")
+            and settings.compositionHint:GetText():find(locale == "ruRU" and "компании" or "party", 1, true),
+            "capability explanation covers the whole party: " .. locale)
+        local original = dictionaries[locale].company_roles_unknown
+        local longReason = string.rep(original .. " ", 8)
+        dictionaries[locale].company_roles_unknown = longReason
+        view.state = "company_roles_unknown"
+        PTG:RefreshUI()
+        frame.statusPanel.scripts.OnEnter(frame.statusPanel)
+        check(GameTooltip:GetText():find(longReason, 1, true) and frame.width == 440 and frame.height == 620,
+            "full view preserves an entire long party status in its tooltip without resizing")
+        frame.statusPanel.scripts.OnLeave()
+        PTG:SetCompactMode(true)
+        frame.drag.scripts.OnEnter(frame.drag)
+        check(GameTooltip:GetText():find(longReason, 1, true)
+            and GameTooltip:GetText():find(PTG:L("company_summary_unknown", 5), 1, true)
+            and GameTooltip:GetText():find(PTG:L("company_help"), 1, true),
+            "compact tooltip includes the long reason, party size and native-confirmation instructions")
+        dictionaries[locale].company_roles_unknown = original
+        for state, kind in pairs(groupStates) do
+            view.state = state
+            PTG:RefreshUI()
+            check(frame.title:GetText() == PTG:L("status_" .. kind)
+                and GameTooltip:GetText():find(PTG:L(state), 1, true) and frame.width == 300 and frame.height == 72,
+                "compact party states preserve the short heading and complete hovered reason: " .. state .. " / " .. locale)
+        end
+        frame.drag.scripts.OnLeave()
+        PTG:SetCompactMode(false)
+        for _, size in ipairs({1, 0}) do
+            view.companySize, view.companyRoles, view.companyLeader = size == 1 and 1 or nil, nil, nil
+            PTG:RefreshUI()
+            check(frame.role:GetText() == PTG:L("current_role", PTG:L("HEALER"), PTG:L("role_auto")),
+                "solo or unavailable party size preserves the existing role indicator: " .. locale)
+        end
+    end
+    check(PTG.steps == savedSteps and PTG.started == savedStarts and PTG.stopped == savedStops
+        and PTG.settingsChanged == savedChanges and PTG.cancelled == savedCancel,
+        "rendering party summaries and all party statuses never issues LFG actions or invalidates settings")
+end
 print("ui_test: " .. checks .. " checks passed")
