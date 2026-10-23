@@ -4,3 +4,4 @@
 /dist/
 /tmp/
 /docs/
+__pycache__/

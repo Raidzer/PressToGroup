@@ -1,16 +1,16 @@
-# PressToGroup 0.1.28
+# PressToGroup 0.1.29-beta.1
 
 [Русская версия](README.ru.md).
 
-A Mythic+ premade group finder assistant for WoW Retail 12.1.5. A standalone addon built on the native WoW API, with no third-party libraries.
+A Mythic+ premade group finder assistant targeting WoW Retail 12.1.5 (`Interface: 120105` in the TOC). A standalone addon built on the native WoW API, with no third-party libraries. Support for other patches is not declared.
 
-This is an early experimental release. Automated tests cover the logic; game input handling and LFG permissions, especially in combat, still require in-game validation.
+This is the first public beta candidate. A solo in-game run has confirmed search, application submission, and cancellation. Automated tests cover the logic; coverage of all input modes, combat, binding persistence after `/reload`, and party scenarios still requires in-game beta testing.
 
 ## Installation
 
-Copy the `PressToGroup` folder from the ZIP into `_retail_/Interface/AddOns/`. The final path should be `_retail_/Interface/AddOns/PressToGroup/PressToGroup.toc`. Restart the game, or use `/reload` if the addon folder was already installed, and enable the addon in the AddOns list.
+Download the ready-to-install `PressToGroup-0.1.29-beta.1.zip` from [GitHub Releases](https://github.com/Raidzer/PressToGroup/releases). Copy the `PressToGroup` folder from that ZIP into `_retail_/Interface/AddOns/`. The final path should be `_retail_/Interface/AddOns/PressToGroup/PressToGroup.toc`. Restart the game, or use `/reload` if the addon folder was already installed, and enable the addon in the AddOns list.
 
-If you download the source using **Code → Download ZIP** on GitHub, rename `PressToGroup-main` to `PressToGroup` before copying it.
+Alternatively, download the source using **Code → Download ZIP** on GitHub and rename `PressToGroup-main` to `PressToGroup` before copying it. Prefer the ready-to-install release ZIP for beta testing.
 
 The `Media` folder containing the icon is included. The icon appears in the WoW AddOns list and the `/ptg` window title.
 
@@ -80,3 +80,11 @@ Settings, window position, and a short log are saved per character. The log does
 ## Limitations
 
 Automatic ability input supports standard Blizzard action bars; custom action bars are not supported. Movement and jump use a keyboard observer that propagates input to the game. Automated tests cannot confirm actual propagation, hardware input context, binding persistence, or permission to perform LFG actions from that observer, especially in combat. Shared applications, role confirmation across clients, and party merging also require in-game validation. The addon does not bypass client restrictions or accept invitations.
+
+## Beta feedback and development
+
+Report reproducible problems in [GitHub Issues](https://github.com/Raidzer/PressToGroup/issues). Include the WoW and addon versions, input mode, solo or party context, combat state, reproduction steps, and relevant `/ptg log` output or Lua error. Remove player names, chat, and other personal information before posting.
+
+See [RELEASING.md](https://github.com/Raidzer/PressToGroup/blob/main/RELEASING.md) for developer checks, packaging, and beta smoke tests, and [RELEASE_NOTES.md](https://github.com/Raidzer/PressToGroup/blob/main/RELEASE_NOTES.md) for the prepared beta release description. Lua and Python are development tools; installing the addon does not require them.
+
+By Raidzer. Licensed under the [MIT License](LICENSE).
